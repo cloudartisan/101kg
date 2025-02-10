@@ -1,0 +1,58 @@
+# 101 Karate Games Video Downloader
+
+This repository contains a Python script to automate the login, extraction, and download of videos from Hotmart's 101 Karate Games platform.
+
+## Features
+- Automates login to Hotmart
+- Extracts video URL from lesson pages
+- Supports MP4 and HLS (.m3u8) downloads
+- Uses Selenium for browser automation
+
+## Prerequisites
+- Python 3 installed
+- Google Chrome installed
+- WebDriver (managed automatically via `webdriver-manager`)
+- `ffmpeg` installed (for HLS video downloads)
+
+## Installation
+1. Clone the repository:
+   ```sh
+   git clone https://github.com/cloudartisan/101kg.git
+   cd 101kg
+   ```
+2. Create a virtual environment:
+   ```sh
+   python3 -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+3. Install dependencies:
+   ```sh
+   pip install -r requirements.txt
+   ```
+
+## Usage
+1. **Set your login credentials**:
+   - Edit `download.py` and replace `your_password_here` with your actual Hotmart password.
+
+2. **Run the script**:
+   ```sh
+   python download.py
+   ```
+
+3. **Downloaded videos** will be saved in the `videos/` directory.
+
+## Notes
+- The script logs in, navigates to the lesson page, extracts the video URL, and downloads it.
+- If the video is in `.m3u8` format, `ffmpeg` is required to convert it to MP4.
+- This script is for personal use only and should not be used to distribute copyrighted material.
+
+## Troubleshooting
+- Ensure that your Hotmart credentials are correct.
+- If Chrome or WebDriver issues arise, update them:
+  ```sh
+  pip install --upgrade selenium webdriver-manager
+  ```
+- If login fails, Hotmart may have changed its authentication flow, requiring script adjustments.
+
+## License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
