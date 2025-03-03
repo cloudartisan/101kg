@@ -41,6 +41,22 @@ class URLExtractor:
         Returns:
             str: JavaScript code as a string
         """
+        script_parts = []
+        script_parts.append(URLExtractor._get_script_initialization())
+        script_parts.append(URLExtractor._get_token_extraction_script())
+        script_parts.append(URLExtractor._get_video_id_extraction_script())
+        script_parts.append(URLExtractor._get_jwt_token_handling_script())
+        script_parts.append(URLExtractor._get_network_interception_script())
+        script_parts.append(URLExtractor._get_url_processing_script())
+        script_parts.append(URLExtractor._get_video_source_script())
+        script_parts.append(URLExtractor._get_trigger_video_script())
+        script_parts.append(URLExtractor._get_resolution_script())
+        
+        return "\n".join(script_parts)
+    
+    @staticmethod
+    def _get_script_initialization():
+        """Initialize the promise and variables."""
         return """
         return new Promise((resolve) => {
             console.log('Starting URL extraction script...');
@@ -50,7 +66,12 @@ class URLExtractor:
             let videoId = null;
             let authToken = null;
             let jwtToken = null;
-            
+        """
+    
+    @staticmethod
+    def _get_token_extraction_script():
+        """Extract JWT token from the URL if available."""
+        return """
             // Try to get JWT token from URL
             try {
                 console.log('Checking URL for JWT token...');
@@ -62,7 +83,12 @@ class URLExtractor:
             } catch (e) {
                 console.error('Error getting JWT token from URL:', e);
             }
-            
+        """
+    
+    @staticmethod
+    def _get_video_id_extraction_script():
+        """Extract video ID from the page."""
+        return """
             // Try to get video ID from the page
             try {
                 const videoElement = document.querySelector('video');
@@ -92,7 +118,12 @@ class URLExtractor:
             } catch (e) {
                 console.error('Error getting video ID from page:', e);
             }
-            
+        """
+    
+    @staticmethod
+    def _get_jwt_token_handling_script():
+        """Handle JWT token direct API call if available."""
+        return """
             // If we have JWT token and video ID, try to get the URL directly
             if (jwtToken && videoId) {
                 console.log('Trying to get URL using JWT token and video ID...');
@@ -118,14 +149,19 @@ class URLExtractor:
                     console.error('Error fetching URL with JWT token:', error);
                 });
             }
-            
+        """
+    
+    @staticmethod
+    def _get_network_interception_script():
+        """Set up network request interception."""
+        return """
             // Look for auth token in the page
             try {
                 console.log('Searching for auth token in page...');
                 const pageContent = document.documentElement.innerHTML;
                 
                 // Look for hdntl token with the specific format from examples
-                const hdntlRegex = /hdntl=exp=[0-9]+~acl=\/\*~data=hdntl~hmac=[a-f0-9]+/g;
+                const hdntlRegex = /hdntl=exp=[0-9]+~acl=[/][*]~data=hdntl~hmac=[a-f0-9]+/g;
                 const hdntlMatches = pageContent.match(hdntlRegex);
                 
                 if (hdntlMatches && hdntlMatches.length > 0) {
@@ -193,7 +229,12 @@ class URLExtractor:
                 }
                 return origFetch.apply(this, arguments);
             };
-            
+        """
+    
+    @staticmethod
+    def _get_url_processing_script():
+        """Define the URL processing function."""
+        return """
             // Function to process URLs
             function processUrl(url) {
                 // Try to extract video ID from URL if not found yet
@@ -214,7 +255,7 @@ class URLExtractor:
                 if (!authToken && url.includes('hdntl=')) {
                     try {
                         // Try to match the specific format from examples
-                        const hdntlRegex = /hdntl=exp=[0-9]+~acl=\/\*~data=hdntl~hmac=[a-f0-9]+/g;
+                        const hdntlRegex = /hdntl=exp=[0-9]+~acl=[/][*]~data=hdntl~hmac=[a-f0-9]+/g;
                         const hdntlMatches = url.match(hdntlRegex);
                         
                         if (hdntlMatches && hdntlMatches.length > 0) {
@@ -258,7 +299,7 @@ class URLExtractor:
                             let urlAuthToken = '';
                             if (url.includes('hdntl=')) {
                                 // Try to match the specific format from examples
-                                const hdntlRegex = /hdntl=exp=[0-9]+~acl=\/\*~data=hdntl~hmac=[a-f0-9]+/g;
+                                const hdntlRegex = /hdntl=exp=[0-9]+~acl=[/][*]~data=hdntl~hmac=[a-f0-9]+/g;
                                 const hdntlMatches = url.match(hdntlRegex);
                                 
                                 if (hdntlMatches && hdntlMatches.length > 0) {
@@ -282,7 +323,12 @@ class URLExtractor:
                     }
                 }
             }
-            
+        """
+    
+    @staticmethod
+    def _get_video_source_script():
+        """Search for video sources directly."""
+        return """
             // Also try to find video sources directly
             try {
                 const videoSources = document.querySelectorAll('video source');
@@ -298,7 +344,12 @@ class URLExtractor:
             } catch (e) {
                 console.error('Error finding video sources:', e);
             }
-            
+        """
+    
+    @staticmethod
+    def _get_trigger_video_script():
+        """Try to trigger video loading by clicking play buttons."""
+        return """
             // Try to trigger video loading by clicking play buttons
             try {
                 const playButtons = document.querySelectorAll('.play-button, button[aria-label="Play"], [role="button"][aria-label="Play"]');
@@ -314,7 +365,12 @@ class URLExtractor:
             } catch (e) {
                 console.error('Error finding play buttons:', e);
             }
-            
+        """
+    
+    @staticmethod
+    def _get_resolution_script():
+        """Resolve and return the final result."""
+        return """
             // Resolve after timeout with all collected URLs
             setTimeout(() => {
                 console.log('URL extraction timeout reached');

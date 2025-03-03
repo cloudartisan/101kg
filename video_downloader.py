@@ -1,9 +1,14 @@
+"""
+Video Downloader Module for Hotmart Platform
+
+This module provides the VideoDownloader class which handles authentication,
+navigation, URL extraction, and video downloading from Hotmart platform.
+"""
 import os
 import time
 import requests
 import m3u8
 import ffmpeg
-import argparse
 import re
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -49,14 +54,28 @@ class VideoDownloader:
         """Set up the Chrome browser with appropriate options and cookies."""
         chrome_options = webdriver.ChromeOptions()
         chrome_options.add_argument("--start-maximized")
+        chrome_options.add_argument("--disable-notifications")
+        chrome_options.add_argument("--disable-popup-blocking")
+        chrome_options.add_argument("--disable-infobars")
+        chrome_options.add_argument("--disable-extensions")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
         
+        # Add user agent to ensure compatibility
+        chrome_options.add_argument("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
+        
+        # Create driver with configured options
         self.driver = webdriver.Chrome(
             service=Service(ChromeDriverManager().install()),
             options=chrome_options
         )
         
+        # Set window size explicitly
+        self.driver.set_window_size(1366, 768)
+        
         # Set initial cookies to prevent popups
         self.driver.get(self.base_url)
+        time.sleep(5)  # Wait for page to load
         self._set_initial_cookies()
     
     def _set_initial_cookies(self):
@@ -68,7 +87,138 @@ class VideoDownloader:
         ]
         
         for cookie in cookie_settings:
-            self.driver.add_cookie(cookie)
+            try:
+                self.driver.add_cookie(cookie)
+            except Exception as e:
+                print(f"Could not add cookie {cookie['name']}: {str(e)}")
+                
+    def _handle_cookie_policy_popup(self):
+        """Handle cookie policy popup if it exists by clicking on accept buttons."""
+        try:
+            # Wait only a short time since we don't want to slow things down if there's no popup
+            wait = WebDriverWait(self.driver, 3)
+            
+            # First try by ID
+            try:
+                # Check if the cookie policy container exists
+                cookie_container = self.driver.find_element(By.ID, "hotmart-cookie-policy")
+                if cookie_container.is_displayed():
+                    print("Found cookie policy popup, attempting to accept...")
+                    
+                    # Try different accept button selectors
+                    selectors = [
+                        "button.accept-button", 
+                        "button.accept", 
+                        "button.agree", 
+                        ".accept-cookies-button",
+                        "button[data-action='accept']",
+                        ".cookie-accept-button",
+                        "#acceptCookies"
+                    ]
+                    
+                    for selector in selectors:
+                        try:
+                            accept_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+                            if accept_button.is_displayed():
+                                self.driver.execute_script("arguments[0].click();", accept_button)
+                                print(f"Clicked cookie accept button with selector: {selector}")
+                                time.sleep(1)  # Wait for the popup to disappear
+                                return True
+                        except:
+                            continue
+                    
+                    # If we can't find a specific button, try clicking on the container itself
+                    self.driver.execute_script("""
+                        var cookieDiv = document.getElementById('hotmart-cookie-policy');
+                        if (cookieDiv) {
+                            var buttons = cookieDiv.getElementsByTagName('button');
+                            for (var i = 0; i < buttons.length; i++) {
+                                if (buttons[i].innerText.toLowerCase().includes('accept') || 
+                                    buttons[i].innerText.toLowerCase().includes('agree') ||
+                                    buttons[i].innerText.toLowerCase().includes('aceitar')) {
+                                    buttons[i].click();
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    """)
+                    time.sleep(1)  # Wait for the popup to disappear
+            except:
+                pass
+                
+            # Try other common cookie consent popup classes/IDs
+            cookie_selectors = [
+                ".cookie-notice", 
+                "#cookie-notice", 
+                ".cookie-banner", 
+                "#cookie-banner",
+                ".cookie-consent",
+                "#cookie-consent",
+                ".cookie-policy",
+                "#cookie-policy"
+            ]
+            
+            for selector in cookie_selectors:
+                try:
+                    cookie_element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if cookie_element.is_displayed():
+                        # Try to find and click an accept button within this element
+                        accept_buttons = cookie_element.find_elements(By.CSS_SELECTOR, 
+                            "button, .accept, .agree, [data-action='accept'], .accept-button"
+                        )
+                        for button in accept_buttons:
+                            if button.is_displayed():
+                                self.driver.execute_script("arguments[0].click();", button)
+                                print(f"Clicked cookie accept button in {selector}")
+                                time.sleep(1)  # Wait for the popup to disappear
+                                return True
+                except:
+                    continue
+                    
+            # If we reached here, try some JavaScript tricks to handle and dismiss popups
+            self.driver.execute_script("""
+                // Try to handle cookie banners by common class/ID names
+                var banners = [
+                    'cookie-banner', 'cookie-notice', 'cookie-policy', 'cookie-consent',
+                    'cookie-popup', 'cookie-message', 'cookie-notification', 'cookie-alert'
+                ];
+                
+                // Try to find and click accept buttons in any of these containers
+                for (var i = 0; i < banners.length; i++) {
+                    var elements = document.getElementsByClassName(banners[i]);
+                    if (elements.length === 0) {
+                        elements = [document.getElementById(banners[i])];
+                    }
+                    
+                    for (var j = 0; j < elements.length; j++) {
+                        if (elements[j]) {
+                            var buttons = elements[j].querySelectorAll('button, .btn, a.accept, a.agree');
+                            for (var k = 0; k < buttons.length; k++) {
+                                if (buttons[k].innerText.toLowerCase().includes('accept') || 
+                                    buttons[k].innerText.toLowerCase().includes('agree') ||
+                                    buttons[k].innerText.toLowerCase().includes('aceitar')) {
+                                    buttons[k].click();
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // If we reach here, try to just hide any cookie policy containers
+                var policy = document.getElementById('hotmart-cookie-policy');
+                if (policy) {
+                    policy.style.display = 'none';
+                    policy.style.visibility = 'hidden';
+                    policy.style.zIndex = '-999999';
+                }
+            """)
+            
+            return False
+        except Exception as e:
+            print(f"Error handling cookie popup: {str(e)}")
+            return False
 
     def login(self):
         """
@@ -79,31 +229,55 @@ class VideoDownloader:
         """
         try:
             self.driver.get(self.login_url)
-            wait = WebDriverWait(self.driver, 20)
+            wait = WebDriverWait(self.driver, 30)  # Increased timeout
             
             # Wait for page to load completely
-            time.sleep(5)
+            time.sleep(8)  # Increased wait time
             
-            # Fill login form
+            # Handle cookie policy popup if it exists
+            self._handle_cookie_policy_popup()
+            
+            # Fill login form - use more generic selectors with better waits
             email_field = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text'], input[type='email']"))
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='text'], input[type='email'], input.form-control"))
             )
             email_field.clear()
             email_field.send_keys(self.email)
             
             password_field = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password']"))
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='password']"))
             )
             password_field.clear()
             password_field.send_keys(self.password)
             
-            login_button = wait.until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.btn-login[data-test='submit']"))
-            )
-            login_button.click()
+            # Make sure cookie popups are handled again before clicking
+            self._handle_cookie_policy_popup()
+            
+            # Try different button selectors to handle possible variations
+            try:
+                # First try the specific selector with JavaScript click to bypass any overlays
+                login_button = wait.until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "button.btn-login[data-test='submit']"))
+                )
+                self.driver.execute_script("arguments[0].click();", login_button)
+            except Exception as e:
+                print(f"Could not find specific login button, trying alternative selectors: {str(e)}")
+                try:
+                    # Try more generic selectors with JavaScript click
+                    login_button = wait.until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "button[type='submit'], button.btn-primary, button.login-button"))
+                    )
+                    self.driver.execute_script("arguments[0].click();", login_button)
+                except Exception as inner_e:
+                    print(f"Still couldn't find login button, trying by XPath: {str(inner_e)}")
+                    # Try to find button by XPath with contains text
+                    login_button = wait.until(
+                        EC.presence_of_element_located((By.XPATH, "//button[contains(text(), 'Login') or contains(text(), 'Entrar') or contains(text(), 'Sign in')]"))
+                    )
+                    self.driver.execute_script("arguments[0].click();", login_button)
             
             # Wait for login to complete
-            time.sleep(5)
+            time.sleep(10)  # Increased wait time
 
             # Transfer cookies from Selenium to requests session
             self._transfer_cookies_to_session()
@@ -299,7 +473,7 @@ class VideoDownloader:
             if 'hdntl=' in request:
                 print(f"Found URL with hdntl token: {request}")
                 # Extract the hdntl token
-                hdntl_pattern = r'hdntl=exp=[0-9]+~acl=\/\*~data=hdntl~hmac=[a-f0-9]+'
+                hdntl_pattern = r'hdntl=exp=[0-9]+~acl=/\*~data=hdntl~hmac=[a-f0-9]+'
                 matches = re.findall(hdntl_pattern, request)
                 
                 if matches:
@@ -328,12 +502,34 @@ class VideoDownloader:
         self.driver.get(lesson_url)
         time.sleep(5)
         
+        # Handle any cookie policy popups before interacting with the page
+        self._handle_cookie_policy_popup()
+        
         # Find the iframe again
         wait = WebDriverWait(self.driver, 15)
         iframe = wait.until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='cf-embed.play.hotmart.com']"))
         )
         
+        # Use JavaScript to ensure the iframe is visible and not covered by anything
+        self.driver.execute_script("""
+            // Make sure the iframe is fully visible and not covered by overlays
+            var iframe = arguments[0];
+            iframe.scrollIntoView({behavior: 'smooth', block: 'center'});
+            
+            // Remove any overlays that might cover the iframe
+            var overlays = document.querySelectorAll('.overlay, .modal, .popup, .cookie-policy, #hotmart-cookie-policy');
+            for (var i = 0; i < overlays.length; i++) {
+                overlays[i].style.display = 'none';
+                overlays[i].style.visibility = 'hidden';
+                overlays[i].style.zIndex = -1;
+            }
+        """, iframe)
+        
+        # Wait a bit after removing overlays
+        time.sleep(1)
+        
+        # Now switch to the iframe
         self.driver.switch_to.frame(iframe)
         
         # Use the extraction script from the URLExtractor module
@@ -380,7 +576,7 @@ class VideoDownloader:
         video_urls = []
         
         # Try to find hdntl token with regex pattern matching the format in examples
-        hdntl_pattern = r'hdntl=exp=[0-9]+~acl=\/\*~data=hdntl~hmac=[a-f0-9]+'
+        hdntl_pattern = r'hdntl=exp=[0-9]+~acl=/\*~data=hdntl~hmac=[a-f0-9]+'
         matches = re.findall(hdntl_pattern, content)
         
         if matches:
@@ -437,7 +633,7 @@ class VideoDownloader:
             if 'hdntl=' in request:
                 print(f"Found request with hdntl token: {request}")
                 # Extract the token
-                hdntl_pattern = r'hdntl=exp=[0-9]+~acl=\/\*~data=hdntl~hmac=[a-f0-9]+'
+                hdntl_pattern = r'hdntl=exp=[0-9]+~acl=/\*~data=hdntl~hmac=[a-f0-9]+'
                 matches = re.findall(hdntl_pattern, request)
                 
                 if matches:
@@ -669,27 +865,3 @@ class VideoDownloader:
             except Exception as e:
                 print(f"Error processing lesson {lesson['title']}: {str(e)}")
                 continue
-
-
-def main():
-    """Main entry point for the script."""
-    parser = argparse.ArgumentParser(description='Download videos from 101 Karate Games')
-    parser.add_argument('--email', help='Your Hotmart email/username', required=True)
-    parser.add_argument('--password', help='Your Hotmart password', required=True)
-    args = parser.parse_args()
-    
-    downloader = VideoDownloader(args.email, args.password)
-    
-    try:
-        if not downloader.login():
-            print("Failed to login. Exiting...")
-            return
-            
-        downloader.download_all_lessons()
-            
-    finally:
-        downloader.close()
-
-
-if __name__ == "__main__":
-    main() 
