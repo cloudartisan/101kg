@@ -15,8 +15,36 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 from url_extractor import URLExtractor
+
+# Try importing logger module, fall back to simple print function if unavailable
+try:
+    import logger
+    log = logger
+except ImportError:
+    # Create a simple fallback logger that just prints
+    class FallbackLogger:
+        @staticmethod
+        def debug(msg, *args, **kwargs): 
+            print(f"DEBUG: {msg}")
+            
+        @staticmethod
+        def info(msg, *args, **kwargs): 
+            print(f"INFO: {msg}")
+            
+        @staticmethod
+        def warning(msg, *args, **kwargs): 
+            print(f"WARNING: {msg}")
+            
+        @staticmethod
+        def error(msg, *args, **kwargs): 
+            print(f"ERROR: {msg}")
+            exc_info = kwargs.get('exc_info', False)
+            if exc_info:
+                import traceback
+                traceback.print_exc()
+    
+    log = FallbackLogger
 
 
 class VideoDownloader:
@@ -64,11 +92,47 @@ class VideoDownloader:
         # Add user agent to ensure compatibility
         chrome_options.add_argument("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
         
-        # Create driver with configured options
-        self.driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=chrome_options
-        )
+        try:
+            # First try to create a driver without specifying the path (using system Chrome)
+            self.driver = webdriver.Chrome(options=chrome_options)
+        except Exception as e:
+            log.warning(f"Failed to create Chrome driver with default settings: {e}")
+            try:
+                # Create driver with configured options using ChromeDriverManager as fallback
+                from selenium.webdriver.chrome.service import Service as ChromeService
+                from webdriver_manager.chrome import ChromeDriverManager
+                
+                # Get the driver path but don't automatically install
+                driver_path = ChromeDriverManager().install()
+                
+                # If the path contains THIRD_PARTY_NOTICES, adjust to find the actual executable
+                if "THIRD_PARTY_NOTICES" in driver_path:
+                    import os
+                    driver_dir = os.path.dirname(driver_path)
+                    for file in os.listdir(driver_dir):
+                        if file.startswith("chromedriver") and not file.endswith(".zip") and not file.endswith(".md"):
+                            driver_path = os.path.join(driver_dir, file)
+                            break
+                
+                service = ChromeService(executable_path=driver_path)
+                self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            except Exception as inner_e:
+                log.warning(f"Failed to create Chrome driver with ChromeDriverManager: {inner_e}")
+                
+                # Last resort - try standard Chrome path by OS
+                import platform
+                if platform.system() == "Darwin":  # macOS
+                    if platform.machine() == "arm64":
+                        driver_path = "/usr/local/bin/chromedriver"
+                    else:
+                        driver_path = "/usr/local/bin/chromedriver"
+                elif platform.system() == "Linux":
+                    driver_path = "/usr/bin/chromedriver"
+                else:  # Windows
+                    driver_path = "C:\\Program Files\\Google\\Chrome\\Application\\chromedriver.exe"
+                
+                service = ChromeService(executable_path=driver_path)
+                self.driver = webdriver.Chrome(service=service, options=chrome_options)
         
         # Set window size explicitly
         self.driver.set_window_size(1366, 768)
@@ -90,7 +154,7 @@ class VideoDownloader:
             try:
                 self.driver.add_cookie(cookie)
             except Exception as e:
-                print(f"Could not add cookie {cookie['name']}: {str(e)}")
+                log.warning(f"Could not add cookie {cookie['name']}: {str(e)}")
                 
     def _handle_cookie_policy_popup(self):
         """Handle cookie policy popup if it exists by clicking on accept buttons."""
@@ -103,7 +167,7 @@ class VideoDownloader:
                 # Check if the cookie policy container exists
                 cookie_container = self.driver.find_element(By.ID, "hotmart-cookie-policy")
                 if cookie_container.is_displayed():
-                    print("Found cookie policy popup, attempting to accept...")
+                    log.info("Found cookie policy popup, attempting to accept...")
                     
                     # Try different accept button selectors
                     selectors = [
@@ -121,7 +185,7 @@ class VideoDownloader:
                             accept_button = self.driver.find_element(By.CSS_SELECTOR, selector)
                             if accept_button.is_displayed():
                                 self.driver.execute_script("arguments[0].click();", accept_button)
-                                print(f"Clicked cookie accept button with selector: {selector}")
+                                log.debug(f"Clicked cookie accept button with selector: {selector}")
                                 time.sleep(1)  # Wait for the popup to disappear
                                 return True
                         except:
@@ -170,7 +234,7 @@ class VideoDownloader:
                         for button in accept_buttons:
                             if button.is_displayed():
                                 self.driver.execute_script("arguments[0].click();", button)
-                                print(f"Clicked cookie accept button in {selector}")
+                                log.debug(f"Clicked cookie accept button in {selector}")
                                 time.sleep(1)  # Wait for the popup to disappear
                                 return True
                 except:
@@ -217,7 +281,7 @@ class VideoDownloader:
             
             return False
         except Exception as e:
-            print(f"Error handling cookie popup: {str(e)}")
+            log.warning(f"Error handling cookie popup: {str(e)}")
             return False
 
     def login(self):
@@ -261,7 +325,7 @@ class VideoDownloader:
                 )
                 self.driver.execute_script("arguments[0].click();", login_button)
             except Exception as e:
-                print(f"Could not find specific login button, trying alternative selectors: {str(e)}")
+                log.warning(f"Could not find specific login button, trying alternative selectors: {str(e)}")
                 try:
                     # Try more generic selectors with JavaScript click
                     login_button = wait.until(
@@ -269,7 +333,7 @@ class VideoDownloader:
                     )
                     self.driver.execute_script("arguments[0].click();", login_button)
                 except Exception as inner_e:
-                    print(f"Still couldn't find login button, trying by XPath: {str(inner_e)}")
+                    log.warning(f"Still couldn't find login button, trying by XPath: {str(inner_e)}")
                     # Try to find button by XPath with contains text
                     login_button = wait.until(
                         EC.presence_of_element_located((By.XPATH, "//button[contains(text(), 'Login') or contains(text(), 'Entrar') or contains(text(), 'Sign in')]"))
@@ -285,7 +349,7 @@ class VideoDownloader:
             return True
             
         except Exception as e:
-            print(f"Login failed: {str(e)}")
+            log.error(f"Login failed: {str(e)}", exc_info=True)
             return False
     
     def _transfer_cookies_to_session(self):
@@ -327,13 +391,18 @@ class VideoDownloader:
             str: The video URL if successful, None otherwise
         """
         try:
-            print(f"Attempting to get video URL from API for video ID: {video_id}")
+            log.info(f"Attempting to get video URL from API for video ID: {video_id}")
             
             # Use the URLExtractor's get_url_from_api method
-            return URLExtractor.get_url_from_api(video_id, self.session, jwt_token)
+            result = URLExtractor.get_url_from_api(video_id, self.session, jwt_token)
+            if result:
+                log.debug(f"API returned URL: {result[:100]}...")
+            else:
+                log.debug("API did not return a URL")
+            return result
             
         except Exception as e:
-            print(f"Error getting URL from API: {str(e)}")
+            log.error(f"Error getting URL from API: {str(e)}", exc_info=True)
             return None
 
     def extract_video_url(self, lesson_url):
@@ -347,7 +416,7 @@ class VideoDownloader:
             list: List of tuples (part_suffix, video_url)
         """
         try:
-            print(f"\nNavigating to lesson page: {lesson_url}")
+            log.info(f"Navigating to lesson page: {lesson_url}")
             self.driver.get(lesson_url)
             time.sleep(8)  # Increased wait time for page to fully load
             
@@ -355,20 +424,21 @@ class VideoDownloader:
             wait = WebDriverWait(self.driver, 15)
             
             # Find the iframe
-            print("Looking for video iframe...")
+            log.info("Looking for video iframe in page")
             iframe = wait.until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='cf-embed.play.hotmart.com']"))
             )
             
             # Extract video ID and JWT token from iframe src
             iframe_src = iframe.get_attribute('src')
-            print(f"Found iframe with src: {iframe_src}")
+            log.info(f"Found iframe with src")
+            log.debug(f"Iframe src: {iframe_src[:100]}...")
             
             video_id = URLExtractor.extract_video_id_from_iframe(iframe_src)
-            print(f"Found video ID: {video_id}")
+            log.info(f"Found video ID: {video_id}")
             
             if not video_id:
-                print("Failed to extract video ID from iframe src")
+                log.error("Failed to extract video ID from iframe src")
                 return []
             
             # Extract JWT token if present
@@ -399,15 +469,16 @@ class VideoDownloader:
                 
         except Exception as e:
             error_msg = str(e).split('\n')[0] if str(e) else "Unknown error"
-            print(f"Failed to load lesson page: {error_msg}")
+            log.error(f"Failed to load lesson page: {error_msg}", exc_info=True)
             return []
     
     def _extract_jwt_token(self, iframe_src):
         """Extract JWT token from iframe src if present."""
         jwt_token = None
         if 'jwtToken=' in iframe_src:
-            print("Found JWT token in iframe src, might help with authentication")
+            log.info("Found JWT token in iframe src, might help with authentication")
             jwt_token = iframe_src.split('jwtToken=')[1].split('&')[0]
+            log.debug(f"JWT token: {jwt_token[:15]}...")
         return jwt_token
     
     def _try_jwt_token_approach(self, video_id, jwt_token):
@@ -418,8 +489,9 @@ class VideoDownloader:
         video_urls = []
         
         # Try to get the video directly using the JWT token as authentication
-        print("Trying to use JWT token to get a direct URL...")
+        log.info("Trying to use JWT token to get a direct URL")
         direct_jwt_url = f"https://cf-embed.play.hotmart.com/video/{video_id}/play?jwt={jwt_token}"
+        log.debug(f"JWT direct URL: {direct_jwt_url[:80]}...")
         response = self.session.get(direct_jwt_url, headers={
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
             'Accept': 'application/json',
@@ -431,18 +503,19 @@ class VideoDownloader:
             try:
                 data = response.json()
                 if 'url' in data:
-                    print(f"Successfully retrieved URL using JWT token: {data['url']}")
+                    log.info("Successfully retrieved URL using JWT token")
+                    log.debug(f"URL from JWT token: {data['url'][:100]}...")
                     video_urls.append(("", data['url']))
                     return video_urls
             except:
                 pass
         
         # If direct API call fails, try to load the embed page with the JWT token
-        print("Direct API call failed. Trying to load embed page with JWT token...")
+        log.info("Direct API call failed. Trying to load embed page with JWT token")
         embed_url = f"https://cf-embed.play.hotmart.com/embed/{video_id}?jwt={jwt_token}"
         
         # Load the embed page in the browser to capture network requests
-        print(f"Loading embed page in browser: {embed_url}")
+        log.info(f"Loading embed page in browser for network request capture")
         self.driver.get(embed_url)
         time.sleep(5)  # Wait for page to load
         
@@ -458,20 +531,21 @@ class VideoDownloader:
         """
         
         network_requests = self.driver.execute_script(script)
-        print(f"Found {len(network_requests)} network requests to Hotmart CDN")
+        log.info(f"Found {len(network_requests)} network requests to Hotmart CDN")
         
         # Look for m3u8 URLs with hdntl token
         for request in network_requests:
-            print(f"Network request: {request}")
+            log.debug(f"Network request found: {request[:100]}...")
             if 'hdntl=' in request and '.m3u8' in request:
-                print(f"Found m3u8 URL with hdntl token: {request}")
+                log.info("Found m3u8 URL with hdntl token")
                 video_urls.append(("", request))
                 return video_urls
         
         # If we didn't find a direct m3u8 URL, look for any URL with hdntl token
         for request in network_requests:
             if 'hdntl=' in request:
-                print(f"Found URL with hdntl token: {request}")
+                log.info("Found URL with hdntl token")
+                log.debug(f"Token URL: {request[:100]}...")
                 # Extract the hdntl token
                 hdntl_pattern = r'hdntl=exp=[0-9]+~acl=/\*~data=hdntl~hmac=[a-f0-9]+'
                 matches = re.findall(hdntl_pattern, request)
@@ -479,7 +553,8 @@ class VideoDownloader:
                 if matches:
                     token = matches[0]
                     direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
-                    print(f"Constructed URL with token from network request: {direct_url}")
+                    log.info("Successfully constructed URL with token from network request")
+                    log.debug(f"URL: {direct_url[:100]}...")
                     video_urls.append(("", direct_url))
                     return video_urls
         
@@ -487,16 +562,17 @@ class VideoDownloader:
     
     def _try_api_approach(self, video_id, jwt_token):
         """Try to get video URL using API methods."""
-        print("Trying API method to get video URL...")
+        log.info("Trying API method to get video URL")
         api_url = self.get_video_url_from_api(video_id, jwt_token)
         if api_url:
-            print(f"Using API URL: {api_url}")
+            log.info("Successfully retrieved URL from API")
+            log.debug(f"Using API URL: {api_url[:100]}...")
             return [("", api_url)]
         return []
     
     def _try_javascript_extraction(self, lesson_url, video_id, jwt_token):
         """Try to extract video URL using JavaScript injection."""
-        print("API method failed. Switching to iframe for JavaScript extraction...")
+        log.info("API method failed. Switching to iframe for JavaScript extraction")
         
         # Navigate back to the lesson page
         self.driver.get(lesson_url)
@@ -533,7 +609,7 @@ class VideoDownloader:
         self.driver.switch_to.frame(iframe)
         
         # Use the extraction script from the URLExtractor module
-        print("Executing URL extraction script...")
+        log.info("Executing URL extraction script")
         script = URLExtractor.get_extraction_script()
         
         # Execute script and wait for URL
@@ -542,9 +618,9 @@ class VideoDownloader:
         # Add JWT token to the result if we have it
         if jwt_token and isinstance(result, dict) and 'jwtToken' not in result:
             result['jwtToken'] = jwt_token
-            print(f"Added JWT token to extraction result")
+            log.debug("Added JWT token to extraction result")
         
-        print("Processing extraction results...")
+        log.info("Processing extraction results")
         # Process the result using the URLExtractor, passing the session for API fallback
         video_urls = URLExtractor.process_extraction_result(result, self.session)
         
@@ -555,13 +631,14 @@ class VideoDownloader:
     
     def _try_direct_embed_approach(self, video_id, jwt_token, lesson_url):
         """Try to get video URL directly from the embed page."""
-        print("No video URLs found using standard methods. Trying direct embed page approach...")
+        log.info("No video URLs found using standard methods. Trying direct embed page approach")
         
         # Try to get the URL directly from the embed page
         embed_url = f"https://cf-embed.play.hotmart.com/embed/{video_id}"
         if jwt_token:
             embed_url += f"?jwt={jwt_token}"
-        print(f"Fetching embed page: {embed_url}")
+        log.info("Fetching embed page content directly")
+        log.debug(f"Embed URL: {embed_url}")
         
         response = self.session.get(embed_url, headers={
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
@@ -581,13 +658,15 @@ class VideoDownloader:
         
         if matches:
             token = matches[0]
-            print(f"Found hdntl token with regex: {token}")
+            log.info("Found hdntl token with regex pattern")
+            log.debug(f"Token: {token}")
             direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
-            print(f"Constructed URL with token from regex: {direct_url}")
+            log.info("Successfully constructed URL with token from regex")
+            log.debug(f"URL: {direct_url[:100]}...")
             video_urls.append(("", direct_url))
             return video_urls
         elif 'hdntl=' in content:
-            print("Found hdntl token in embed page")
+            log.info("Found hdntl token in embed page content")
             token_start = content.find('hdntl=')
             if token_start > 0:
                 token_end = content.find('"', token_start)
@@ -595,8 +674,10 @@ class VideoDownloader:
                     token_end = content.find("'", token_start)
                 if token_end > 0:
                     token = content[token_start:token_end]
+                    log.debug(f"Extracted token: {token[:50]}...")
                     direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
-                    print(f"Constructed URL with token from embed page: {direct_url}")
+                    log.info("Successfully constructed URL with token from embed page")
+                    log.debug(f"URL: {direct_url[:100]}...")
                     video_urls.append(("", direct_url))
                     return video_urls
         
@@ -604,13 +685,14 @@ class VideoDownloader:
     
     def _try_network_requests_approach(self, video_id, jwt_token):
         """Try to extract video URL from network requests."""
-        print("Still no URL found. Trying to extract from network requests...")
+        log.info("Still no URL found. Trying to extract from network requests")
         
         # Navigate to the embed page directly
         embed_url = f"https://cf-embed.play.hotmart.com/embed/{video_id}"
         if jwt_token:
             embed_url += f"?jwt={jwt_token}"
-        print(f"Loading embed page in browser: {embed_url}")
+        log.info("Loading embed page in browser for network monitoring")
+        log.debug(f"Embed URL: {embed_url}")
         
         self.driver.get(embed_url)
         time.sleep(5)  # Wait for page to load
@@ -631,15 +713,18 @@ class VideoDownloader:
         
         for request in network_requests:
             if 'hdntl=' in request:
-                print(f"Found request with hdntl token: {request}")
+                log.info("Found network request with hdntl token")
+                log.debug(f"Request: {request[:100]}...")
                 # Extract the token
                 hdntl_pattern = r'hdntl=exp=[0-9]+~acl=/\*~data=hdntl~hmac=[a-f0-9]+'
                 matches = re.findall(hdntl_pattern, request)
                 
                 if matches:
                     token = matches[0]
+                    log.debug(f"Extracted token: {token[:50]}...")
                     direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
-                    print(f"Constructed URL with token from network request: {direct_url}")
+                    log.info("Successfully constructed URL with token from network request")
+                    log.debug(f"URL: {direct_url[:100]}...")
                     video_urls.append(("", direct_url))
                     return video_urls
         
@@ -659,13 +744,15 @@ class VideoDownloader:
         try:
             # Check if video is HLS stream
             if video_url.endswith('.m3u8'):
+                log.info(f"Detected HLS stream format for {filename}")
                 self._download_hls(video_url, filename)
             else:
+                log.info(f"Detected MP4 format for {filename}")
                 self._download_mp4(video_url, filename)
             return True
             
         except Exception as e:
-            print(f"Download failed: {str(e)}")
+            log.error(f"Download failed for {filename}: {str(e)}", exc_info=True)
             return False
 
     def _download_mp4(self, video_url, filename):
@@ -698,7 +785,8 @@ class VideoDownloader:
             Exception: If download fails
         """
         try:
-            print(f"Downloading HLS stream: {video_url}")
+            log.info(f"Starting HLS stream download for {filename}")
+            log.debug(f"HLS URL: {video_url[:100]}...")
             
             # Set headers based on what we saw in the network requests
             headers = {
@@ -710,29 +798,32 @@ class VideoDownloader:
             }
             
             # Use our session to load the playlist
-            print("Fetching playlist...")
+            log.info("Fetching M3U8 playlist")
             playlist_response = self.session.get(video_url, headers=headers)
             if not playlist_response.ok:
-                print(f"Failed to load playlist: {playlist_response.status_code}")
-                print(f"Response: {playlist_response.text}")
+                log.error(f"Failed to load playlist: {playlist_response.status_code}")
+                log.error(f"Response: {playlist_response.text}")
                 raise Exception(f"Failed to load playlist: {playlist_response.status_code}")
                 
-            print("Parsing playlist...")
+            log.info("Parsing M3U8 playlist")
             playlist = m3u8.loads(playlist_response.text)
             output_path = os.path.join(self.download_dir, f"{filename}.mp4")
+            log.debug(f"Output path: {output_path}")
             
             # Extract auth token and cookies for ffmpeg
             headers_arg = self._prepare_ffmpeg_headers(video_url)
             
             # Try primary ffmpeg method
             try:
+                log.info("Using primary ffmpeg-python method for download")
                 self._download_with_ffmpeg_python(video_url, output_path, headers_arg)
             except Exception as e:
-                print(f"Primary ffmpeg method failed: {str(e)}")
+                log.warning(f"Primary ffmpeg method failed: {str(e)}")
+                log.info("Falling back to ffmpeg subprocess method")
                 self._download_with_ffmpeg_subprocess(video_url, output_path)
             
         except Exception as e:
-            print(f"HLS download failed: {str(e)}")
+            log.error(f"HLS download failed for {filename}: {str(e)}", exc_info=True)
             raise
     
     def _prepare_ffmpeg_headers(self, video_url):
@@ -757,18 +848,19 @@ class VideoDownloader:
     
     def _download_with_ffmpeg_python(self, video_url, output_path, headers_arg):
         """Download video using ffmpeg-python library."""
-        print(f"Starting ffmpeg download to {output_path}...")
+        log.info(f"Starting ffmpeg download to {output_path}")
         stream = ffmpeg.input(
             video_url,
             headers=headers_arg
         )
         stream = ffmpeg.output(stream, output_path)
+        log.debug("Running ffmpeg with parameters")
         ffmpeg.run(stream, overwrite_output=True)
-        print(f"Download completed: {output_path}")
+        log.info(f"Download completed: {output_path}")
     
     def _download_with_ffmpeg_subprocess(self, video_url, output_path):
         """Download video using direct ffmpeg subprocess call as fallback."""
-        print("Trying alternative download method with subprocess...")
+        log.info("Using ffmpeg subprocess method as fallback")
         cookie_header = '; '.join([f"{c.name}={c.value}" for c in self.session.cookies])
         
         cmd = [
@@ -779,13 +871,16 @@ class VideoDownloader:
             output_path
         ]
         
+        log.debug(f"FFmpeg command: {' '.join(cmd[:3])} [...headers omitted...] {' '.join(cmd[-4:])}")
+        
         import subprocess
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            print(f"Alternative method failed: {result.stderr}")
+            log.error(f"FFmpeg subprocess failed with code {result.returncode}")
+            log.debug(f"FFmpeg stderr: {result.stderr[:1000]}...")
             raise Exception(f"Alternative download method failed: {result.returncode}")
         
-        print(f"Alternative download completed: {output_path}")
+        log.info(f"FFmpeg subprocess download completed: {output_path}")
 
     def close(self):
         """Close the browser."""
@@ -807,7 +902,7 @@ class VideoDownloader:
             title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
             return title or "lesson"
         except Exception as e:
-            print(f"Failed to get lesson title: {str(e)}")
+            log.warning(f"Failed to get lesson title: {str(e)}")
             return "lesson"
 
     def get_all_lessons(self):
@@ -818,6 +913,8 @@ class VideoDownloader:
             list: List of dictionaries with lesson hash and title
         """
         try:
+            log.info("Finding all lessons from navigation menu")
+            
             # Wait for the lesson navigation to load
             wait = WebDriverWait(self.driver, 10)
             lessons = wait.until(
@@ -825,43 +922,55 @@ class VideoDownloader:
             )
             
             lesson_data = []
-            for lesson in lessons:
+            log.debug(f"Found {len(lessons)} lesson elements in navigation")
+            
+            for i, lesson in enumerate(lessons):
                 hash = lesson.get_attribute('data-page-hash')
                 title = lesson.find_element(By.CSS_SELECTOR, '.navigation-page-title').text.strip()
                 lesson_data.append({'hash': hash, 'title': title})
                 
+            log.info(f"Successfully extracted data for {len(lesson_data)} lessons")
             return lesson_data
         except Exception as e:
-            print(f"Failed to get lessons: {str(e)}")
+            log.error("Failed to get lessons", exc_info=True)
             return []
 
     def download_all_lessons(self):
         """Download videos from all lessons."""
         lessons = self.get_all_lessons()
+        log.info(f"Found {len(lessons)} lessons to download")
         
         for i, lesson in enumerate(lessons, 1):
             try:
-                print(f"\nProcessing lesson {i}/{len(lessons)}: {lesson['title']}")
+                lesson_title = lesson['title']
+                log.info(f"Processing lesson {i}/{len(lessons)}: {lesson_title}")
                 
                 # Navigate to lesson using hash
                 lesson_url = f"{self.base_url}/lesson/{lesson['hash']}"
+                log.debug(f"Lesson URL: {lesson_url}")
+                
                 video_urls = self.extract_video_url(lesson_url)
                 
                 if not video_urls:
-                    print(f"No videos found for lesson: {lesson['title']}")
+                    log.warning(f"No videos found for lesson: {lesson_title}")
                     continue
                 
-                for part_suffix, video_url in video_urls:
+                log.info(f"Found {len(video_urls)} video parts for lesson: {lesson_title}")
+                
+                for part_idx, (part_suffix, video_url) in enumerate(video_urls, 1):
                     # Create filename from lesson number, title and part
-                    filename = f"{i:03d}_{lesson['title']}"
+                    filename = f"{i:03d}_{lesson_title}"
                     if part_suffix:
                         filename = f"{filename}_{part_suffix}"
                     
+                    log.info(f"Downloading part {part_idx}/{len(video_urls)}: {filename}")
+                    log.debug(f"Video URL: {video_url[:100]}...")
+                    
                     if self.download_video(video_url, filename):
-                        print(f"Successfully downloaded: {filename}")
+                        log.info(f"Successfully downloaded: {filename}")
                     else:
-                        print(f"Failed to download: {filename}")
+                        log.error(f"Failed to download: {filename}")
                     
             except Exception as e:
-                print(f"Error processing lesson {lesson['title']}: {str(e)}")
+                log.error(f"Error processing lesson {lesson['title']}", exc_info=True)
                 continue
