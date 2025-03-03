@@ -6,6 +6,20 @@ It's separated to make the code more maintainable and to preserve working URL ex
 """
 import re
 import requests
+from url_utils import (
+    HOTMART_CDN_BASE, 
+    HOTMART_EMBED_BASE, 
+    HOTMART_PLAYER_API, 
+    HOTMART_CLUB_API,
+    DEFAULT_HEADERS,
+    HDNTL_PATTERN,
+    extract_video_id_from_iframe,
+    extract_auth_token,
+    extract_jwt_token,
+    construct_video_url,
+    construct_embed_url,
+    get_api_headers
+)
 
 
 class URLExtractor:
@@ -13,20 +27,6 @@ class URLExtractor:
     Class for extracting video URLs from Hotmart's platform.
     Contains methods for JavaScript injection, API calls, and URL construction.
     """
-    
-    # Constants for URL patterns
-    HOTMART_CDN_BASE = "https://vod-akm.play.hotmart.com/video"
-    HOTMART_EMBED_BASE = "https://cf-embed.play.hotmart.com/embed"
-    HOTMART_PLAYER_API = "https://api-player.hotmart.com/v1/content/video"
-    HOTMART_CLUB_API = "https://api-club.hotmart.com/hot-club-api/rest/v3/content/video"
-    
-    # Common headers for requests
-    DEFAULT_HEADERS = {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
-        'Accept': 'application/json',
-        'Origin': 'https://cf-embed.play.hotmart.com',
-        'Referer': 'https://cf-embed.play.hotmart.com/'
-    }
     
     @staticmethod
     def get_extraction_script():
@@ -160,7 +160,7 @@ class URLExtractor:
                 console.log('Searching for auth token in page...');
                 const pageContent = document.documentElement.innerHTML;
                 
-                // Look for hdntl token with the specific format from examples
+                // Look for hdntl token with the specific format from examples (same as HDNTL_PATTERN in url_utils.py)
                 const hdntlRegex = /hdntl=exp=[0-9]+~acl=[/][*]~data=hdntl~hmac=[a-f0-9]+/g;
                 const hdntlMatches = pageContent.match(hdntlRegex);
                 
@@ -254,7 +254,7 @@ class URLExtractor:
                 // Extract auth token if not found yet
                 if (!authToken && url.includes('hdntl=')) {
                     try {
-                        // Try to match the specific format from examples
+                        // Use the same pattern as defined in url_utils.py
                         const hdntlRegex = /hdntl=exp=[0-9]+~acl=[/][*]~data=hdntl~hmac=[a-f0-9]+/g;
                         const hdntlMatches = url.match(hdntlRegex);
                         
@@ -384,6 +384,7 @@ class URLExtractor:
                 // If we have video ID and auth token but no direct URL, construct one
                 if (videoId && authToken && !foundUrl) {
                     console.log('Constructing URL from video ID and auth token');
+                    // This matches the format in url_utils.construct_video_url()
                     foundUrl = `https://vod-akm.play.hotmart.com/video/${videoId}/hls/${videoId}-audio=2756-video=2292536.m3u8?${authToken}`;
                     console.log('Constructed URL:', foundUrl);
                 }
@@ -400,21 +401,8 @@ class URLExtractor:
         });
         """
     
-    @staticmethod
-    def extract_video_id_from_iframe(iframe_src):
-        """
-        Extracts the video ID from the iframe source URL.
-        
-        Args:
-            iframe_src (str): The src attribute of the iframe
-            
-        Returns:
-            str: The extracted video ID, or None if not found
-        """
-        try:
-            return iframe_src.split('/embed/')[1].split('?')[0]
-        except (IndexError, AttributeError):
-            return None
+    # Use the function from url_utils instead
+    extract_video_id_from_iframe = staticmethod(extract_video_id_from_iframe)
     
     @staticmethod
     def process_extraction_result(result, session=None):
@@ -483,7 +471,7 @@ class URLExtractor:
         if result.get('videoId') and result.get('authToken'):
             video_id = result['videoId']
             auth_token = result['authToken']
-            url = f"{URLExtractor.HOTMART_CDN_BASE}/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{auth_token}"
+            url = construct_video_url(video_id, auth_token)
             print(f"\nConstructed URL with video ID and auth token: {url}")
             video_urls.append(("", url))
             return True
@@ -529,7 +517,7 @@ class URLExtractor:
     @staticmethod
     def _construct_direct_url(video_id, video_urls):
         """Construct a direct URL as last resort."""
-        direct_url = f"{URLExtractor.HOTMART_CDN_BASE}/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8"
+        direct_url = construct_video_url(video_id)
         print(f"\nConstructing direct URL from video ID (last resort): {direct_url}")
         video_urls.append(("", direct_url))
         return True
@@ -591,11 +579,7 @@ class URLExtractor:
         """Try to get URL using JWT token API endpoint."""
         print(f"Trying to get URL using JWT token for video ID: {video_id}")
         jwt_api_url = f"https://cf-embed.play.hotmart.com/video/{video_id}/play?jwt={jwt_token}"
-        headers = URLExtractor.DEFAULT_HEADERS.copy()
-        headers.update({
-            'Content-Type': 'application/json',
-            'Referer': f'{URLExtractor.HOTMART_EMBED_BASE}/{video_id}'
-        })
+        headers = get_api_headers(video_id)
         
         response = session.get(jwt_api_url, headers=headers)
         if response.status_code == 200:
@@ -611,8 +595,8 @@ class URLExtractor:
     @staticmethod
     def _try_player_api(video_id, session):
         """Try to get URL using player API."""
-        player_api_url = f"{URLExtractor.HOTMART_PLAYER_API}/{video_id}/play"
-        response = session.get(player_api_url, headers=URLExtractor.DEFAULT_HEADERS)
+        player_api_url = f"{HOTMART_PLAYER_API}/{video_id}/play"
+        response = session.get(player_api_url, headers=DEFAULT_HEADERS)
         if response.status_code == 200:
             data = response.json()
             if 'url' in data:
@@ -623,8 +607,8 @@ class URLExtractor:
     @staticmethod
     def _try_club_api(video_id, session):
         """Try to get URL using club API."""
-        club_api_url = f"{URLExtractor.HOTMART_CLUB_API}/{video_id}/play"
-        response = session.get(club_api_url, headers=URLExtractor.DEFAULT_HEADERS)
+        club_api_url = f"{HOTMART_CLUB_API}/{video_id}/play"
+        response = session.get(club_api_url, headers=DEFAULT_HEADERS)
         if response.status_code == 200:
             data = response.json()
             if 'url' in data:
@@ -636,10 +620,7 @@ class URLExtractor:
     def _try_embed_api(video_id, session):
         """Try to get URL using embed API."""
         embed_api_url = f"https://cf-embed.play.hotmart.com/video/{video_id}/play"
-        headers = URLExtractor.DEFAULT_HEADERS.copy()
-        headers.update({
-            'Referer': f'{URLExtractor.HOTMART_EMBED_BASE}/{video_id}'
-        })
+        headers = get_api_headers(video_id)
         
         response = session.get(embed_api_url, headers=headers)
         if response.status_code == 200:
@@ -655,7 +636,7 @@ class URLExtractor:
     @staticmethod
     def _try_extract_from_embed_page(video_id, session):
         """Try to extract token from embed page and construct URL."""
-        embed_url = f"{URLExtractor.HOTMART_EMBED_BASE}/{video_id}"
+        embed_url = construct_embed_url(video_id)
         response = session.get(embed_url, headers={
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
             'Accept': 'text/html,application/xhtml+xml,application/xml',
@@ -664,16 +645,10 @@ class URLExtractor:
         
         if response.status_code == 200:
             content = response.text
-            if 'hdntl=' in content:
+            token = extract_auth_token(content)
+            if token:
                 print("Found hdntl token in embed page")
-                token_start = content.find('hdntl=')
-                if token_start > 0:
-                    token_end = content.find('"', token_start)
-                    if token_end < 0:
-                        token_end = content.find("'", token_start)
-                    if token_end > 0:
-                        token = content[token_start:token_end]
-                        url = f"{URLExtractor.HOTMART_CDN_BASE}/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
-                        print(f"Constructed URL with token from embed page: {url}")
-                        return url
+                url = construct_video_url(video_id, token)
+                print(f"Constructed URL with token from embed page: {url}")
+                return url
         return None

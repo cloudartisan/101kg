@@ -16,6 +16,16 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from url_extractor import URLExtractor
+from url_utils import (
+    HOTMART_CDN_BASE,
+    HOTMART_EMBED_BASE,
+    HDNTL_PATTERN,
+    extract_video_id_from_iframe,
+    extract_jwt_token,
+    extract_auth_token,
+    construct_video_url,
+    construct_embed_url
+)
 
 # Try importing logger module, fall back to simple print function if unavailable
 try:
@@ -474,10 +484,9 @@ class VideoDownloader:
     
     def _extract_jwt_token(self, iframe_src):
         """Extract JWT token from iframe src if present."""
-        jwt_token = None
-        if 'jwtToken=' in iframe_src:
+        jwt_token = extract_jwt_token(iframe_src)
+        if jwt_token:
             log.info("Found JWT token in iframe src, might help with authentication")
-            jwt_token = iframe_src.split('jwtToken=')[1].split('&')[0]
             log.debug(f"JWT token: {jwt_token[:15]}...")
         return jwt_token
     
@@ -496,7 +505,7 @@ class VideoDownloader:
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
             'Accept': 'application/json',
             'Origin': 'https://cf-embed.play.hotmart.com',
-            'Referer': f'https://cf-embed.play.hotmart.com/embed/{video_id}'
+            'Referer': f'{HOTMART_EMBED_BASE}/{video_id}'
         })
         
         if response.status_code == 200:
@@ -512,7 +521,7 @@ class VideoDownloader:
         
         # If direct API call fails, try to load the embed page with the JWT token
         log.info("Direct API call failed. Trying to load embed page with JWT token")
-        embed_url = f"https://cf-embed.play.hotmart.com/embed/{video_id}?jwt={jwt_token}"
+        embed_url = construct_embed_url(video_id, jwt_token)
         
         # Load the embed page in the browser to capture network requests
         log.info(f"Loading embed page in browser for network request capture")
@@ -547,12 +556,10 @@ class VideoDownloader:
                 log.info("Found URL with hdntl token")
                 log.debug(f"Token URL: {request[:100]}...")
                 # Extract the hdntl token
-                hdntl_pattern = r'hdntl=exp=[0-9]+~acl=/\*~data=hdntl~hmac=[a-f0-9]+'
-                matches = re.findall(hdntl_pattern, request)
+                token = extract_auth_token(request)
                 
-                if matches:
-                    token = matches[0]
-                    direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
+                if token:
+                    direct_url = construct_video_url(video_id, token)
                     log.info("Successfully constructed URL with token from network request")
                     log.debug(f"URL: {direct_url[:100]}...")
                     video_urls.append(("", direct_url))
@@ -634,9 +641,7 @@ class VideoDownloader:
         log.info("No video URLs found using standard methods. Trying direct embed page approach")
         
         # Try to get the URL directly from the embed page
-        embed_url = f"https://cf-embed.play.hotmart.com/embed/{video_id}"
-        if jwt_token:
-            embed_url += f"?jwt={jwt_token}"
+        embed_url = construct_embed_url(video_id, jwt_token)
         log.info("Fetching embed page content directly")
         log.debug(f"Embed URL: {embed_url}")
         
@@ -652,34 +657,17 @@ class VideoDownloader:
         content = response.text
         video_urls = []
         
-        # Try to find hdntl token with regex pattern matching the format in examples
-        hdntl_pattern = r'hdntl=exp=[0-9]+~acl=/\*~data=hdntl~hmac=[a-f0-9]+'
-        matches = re.findall(hdntl_pattern, content)
+        # Try to find hdntl token using our extraction utility
+        token = extract_auth_token(content)
         
-        if matches:
-            token = matches[0]
-            log.info("Found hdntl token with regex pattern")
-            log.debug(f"Token: {token}")
-            direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
-            log.info("Successfully constructed URL with token from regex")
+        if token:
+            log.info("Found hdntl token in embed page content")
+            log.debug(f"Token: {token[:50] if len(token) > 50 else token}...")
+            direct_url = construct_video_url(video_id, token)
+            log.info("Successfully constructed URL with token from embed page")
             log.debug(f"URL: {direct_url[:100]}...")
             video_urls.append(("", direct_url))
             return video_urls
-        elif 'hdntl=' in content:
-            log.info("Found hdntl token in embed page content")
-            token_start = content.find('hdntl=')
-            if token_start > 0:
-                token_end = content.find('"', token_start)
-                if token_end < 0:
-                    token_end = content.find("'", token_start)
-                if token_end > 0:
-                    token = content[token_start:token_end]
-                    log.debug(f"Extracted token: {token[:50]}...")
-                    direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
-                    log.info("Successfully constructed URL with token from embed page")
-                    log.debug(f"URL: {direct_url[:100]}...")
-                    video_urls.append(("", direct_url))
-                    return video_urls
         
         return []
     
@@ -688,9 +676,7 @@ class VideoDownloader:
         log.info("Still no URL found. Trying to extract from network requests")
         
         # Navigate to the embed page directly
-        embed_url = f"https://cf-embed.play.hotmart.com/embed/{video_id}"
-        if jwt_token:
-            embed_url += f"?jwt={jwt_token}"
+        embed_url = construct_embed_url(video_id, jwt_token)
         log.info("Loading embed page in browser for network monitoring")
         log.debug(f"Embed URL: {embed_url}")
         
@@ -716,13 +702,11 @@ class VideoDownloader:
                 log.info("Found network request with hdntl token")
                 log.debug(f"Request: {request[:100]}...")
                 # Extract the token
-                hdntl_pattern = r'hdntl=exp=[0-9]+~acl=/\*~data=hdntl~hmac=[a-f0-9]+'
-                matches = re.findall(hdntl_pattern, request)
+                token = extract_auth_token(request)
                 
-                if matches:
-                    token = matches[0]
-                    log.debug(f"Extracted token: {token[:50]}...")
-                    direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
+                if token:
+                    log.debug(f"Extracted token: {token[:50] if len(token) > 50 else token}...")
+                    direct_url = construct_video_url(video_id, token)
                     log.info("Successfully constructed URL with token from network request")
                     log.debug(f"URL: {direct_url[:100]}...")
                     video_urls.append(("", direct_url))
