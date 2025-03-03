@@ -32,10 +32,10 @@ HDNTL_PATTERN = r'hdntl=exp=[0-9]+~acl=[/][*]~data=hdntl~hmac=[a-f0-9]+'
 def extract_video_id_from_iframe(iframe_src):
     """
     Extracts the video ID from the iframe source URL.
-    
+
     Args:
         iframe_src (str): The src attribute of the iframe
-        
+
     Returns:
         str: The extracted video ID, or None if not found
     """
@@ -48,10 +48,10 @@ def extract_video_id_from_iframe(iframe_src):
 def extract_jwt_token(iframe_src):
     """
     Extract JWT token from iframe src if present.
-    
+
     Args:
         iframe_src (str): The iframe source URL
-        
+
     Returns:
         str: The JWT token if found, None otherwise
     """
@@ -66,10 +66,10 @@ def extract_jwt_token(iframe_src):
 def extract_auth_token(content):
     """
     Extract authentication token (hdntl) from content.
-    
+
     Args:
         content (str): HTML content or URL containing the token
-        
+
     Returns:
         str: The auth token if found, None otherwise
     """
@@ -77,7 +77,7 @@ def extract_auth_token(content):
     matches = re.findall(HDNTL_PATTERN, content)
     if matches:
         return matches[0]
-    
+
     # Fallback to simpler extraction
     if 'hdntl=' in content:
         token_start = content.find('hdntl=')
@@ -91,41 +91,41 @@ def extract_auth_token(content):
                 return content[token_start:token_end]
             # If we can't find a delimiter, return the rest of the string
             return content[token_start:]
-    
+
     return None
 
 
 def construct_video_url(video_id, auth_token=None, quality="audio=2756-video=2292536"):
     """
     Construct a video URL with the given parameters.
-    
+
     Args:
         video_id (str): The video ID
         auth_token (str, optional): Authentication token
         quality (str, optional): Video quality string
-        
+
     Returns:
         str: The constructed video URL
     """
     base_url = f"{HOTMART_CDN_BASE}/{video_id}/hls/{video_id}-{quality}.m3u8"
-    
+
     if auth_token:
         # If auth_token doesn't start with hdntl= or hdnts=, add hdntl= prefix
         if not auth_token.startswith('hdntl=') and not auth_token.startswith('hdnts='):
             auth_token = f"hdntl={auth_token}"
         return f"{base_url}?{auth_token}"
-    
+
     return base_url
 
 
 def construct_embed_url(video_id, jwt_token=None):
     """
     Construct an embed URL with optional JWT token.
-    
+
     Args:
         video_id (str): The video ID
         jwt_token (str, optional): JWT token for authentication
-        
+
     Returns:
         str: The constructed embed URL
     """
@@ -138,10 +138,10 @@ def construct_embed_url(video_id, jwt_token=None):
 def get_api_headers(video_id=None):
     """
     Get headers for API requests.
-    
+
     Args:
         video_id (str, optional): The video ID for setting the referer
-        
+
     Returns:
         dict: Headers dictionary
     """

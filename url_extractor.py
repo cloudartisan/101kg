@@ -31,17 +31,17 @@ class URLExtractor:
     Class for extracting video URLs from Hotmart's platform.
     Contains methods for JavaScript injection, API calls, and URL construction.
     """
-    
+
     @staticmethod
     def get_extraction_script():
         """
         Returns the JavaScript code that intercepts network requests to find video URLs.
-        
+
         This script:
         1. Intercepts fetch and XMLHttpRequest requests
         2. Looks for video URLs from the Hotmart CDN
         3. Extracts and constructs proper m3u8 URLs with auth tokens
-        
+
         Returns:
             str: JavaScript code as a string
         """
@@ -55,9 +55,9 @@ class URLExtractor:
         script_parts.append(URLExtractor._get_video_source_script())
         script_parts.append(URLExtractor._get_trigger_video_script())
         script_parts.append(URLExtractor._get_resolution_script())
-        
+
         return "\n".join(script_parts)
-    
+
     @staticmethod
     def _get_script_initialization():
         """Initialize the promise and variables."""
@@ -71,7 +71,7 @@ class URLExtractor:
             let authToken = null;
             let jwtToken = null;
         """
-    
+
     @staticmethod
     def _get_token_extraction_script():
         """Extract JWT token from the URL if available."""
@@ -88,7 +88,7 @@ class URLExtractor:
                 console.error('Error getting JWT token from URL:', e);
             }
         """
-    
+
     @staticmethod
     def _get_video_id_extraction_script():
         """Extract video ID from the page."""
@@ -102,12 +102,12 @@ class URLExtractor:
                         videoId = videoElement.dataset.videoId;
                         console.log('Found video ID from video element:', videoId);
                     }
-                    
+
                     // Try to play the video to trigger requests
                     console.log('Attempting to play video...');
                     videoElement.currentTime = 0;
                     videoElement.play().catch(e => console.log('Play error:', e));
-                    
+
                     // Try to get the source directly
                     if (videoElement.src) {
                         console.log('Video has direct source:', videoElement.src);
@@ -123,7 +123,7 @@ class URLExtractor:
                 console.error('Error getting video ID from page:', e);
             }
         """
-    
+
     @staticmethod
     def _get_jwt_token_handling_script():
         """Handle JWT token direct API call if available."""
@@ -131,7 +131,7 @@ class URLExtractor:
             // If we have JWT token and video ID, try to get the URL directly
             if (jwtToken && videoId) {
                 console.log('Trying to get URL using JWT token and video ID...');
-                
+
                 // Make a direct fetch request to the API
                 fetch(`https://cf-embed.play.hotmart.com/video/${videoId}/play?jwt=${jwtToken}`, {
                     method: 'GET',
@@ -154,7 +154,7 @@ class URLExtractor:
                 });
             }
         """
-    
+
     @staticmethod
     def _get_network_interception_script():
         """Set up network request interception."""
@@ -163,11 +163,11 @@ class URLExtractor:
             try {
                 console.log('Searching for auth token in page...');
                 const pageContent = document.documentElement.innerHTML;
-                
+
                 // Look for hdntl token with the specific format from examples (same as HDNTL_PATTERN in url_utils.py)
                 const hdntlRegex = /hdntl=exp=[0-9]+~acl=[/][*]~data=hdntl~hmac=[a-f0-9]+/g;
                 const hdntlMatches = pageContent.match(hdntlRegex);
-                
+
                 if (hdntlMatches && hdntlMatches.length > 0) {
                     authToken = hdntlMatches[0];
                     console.log('Found hdntl token with regex:', authToken);
@@ -183,7 +183,7 @@ class URLExtractor:
             } catch (e) {
                 console.error('Error searching for auth token:', e);
             }
-            
+
             // Check network requests for tokens
             try {
                 console.log('Checking performance entries for auth tokens...');
@@ -198,28 +198,28 @@ class URLExtractor:
             } catch (e) {
                 console.error('Error checking performance entries:', e);
             }
-            
+
             // Intercept XMLHttpRequest
             const origXHROpen = XMLHttpRequest.prototype.open;
             const origXHRSend = XMLHttpRequest.prototype.send;
-            
+
             XMLHttpRequest.prototype.open = function() {
                 this._url = arguments[1];
                 return origXHROpen.apply(this, arguments);
             };
-            
+
             XMLHttpRequest.prototype.send = function() {
                 const url = this._url;
                 if (url && typeof url === 'string' && url.includes('vod-akm.play.hotmart.com')) {
                     console.log('XHR intercepted:', url);
                     allUrls.push(url);
-                    
+
                     // Process URL same as fetch
                     processUrl(url);
                 }
                 return origXHRSend.apply(this, arguments);
             };
-            
+
             // Intercept fetch
             const origFetch = window.fetch;
             window.fetch = function() {
@@ -227,14 +227,14 @@ class URLExtractor:
                 if (url && typeof url === 'string' && url.includes('vod-akm.play.hotmart.com')) {
                     console.log('Fetch intercepted:', url);
                     allUrls.push(url);
-                    
+
                     // Process URL
                     processUrl(url);
                 }
                 return origFetch.apply(this, arguments);
             };
         """
-    
+
     @staticmethod
     def _get_url_processing_script():
         """Define the URL processing function."""
@@ -254,14 +254,14 @@ class URLExtractor:
                         console.error('Error extracting video ID from URL:', e);
                     }
                 }
-                
+
                 // Extract auth token if not found yet
                 if (!authToken && url.includes('hdntl=')) {
                     try {
                         // Use the same pattern as defined in url_utils.py
                         const hdntlRegex = /hdntl=exp=[0-9]+~acl=[/][*]~data=hdntl~hmac=[a-f0-9]+/g;
                         const hdntlMatches = url.match(hdntlRegex);
-                        
+
                         if (hdntlMatches && hdntlMatches.length > 0) {
                             authToken = hdntlMatches[0];
                             console.log('Extracted auth token with regex from URL:', authToken);
@@ -277,13 +277,13 @@ class URLExtractor:
                         console.error('Error extracting auth token:', e);
                     }
                 }
-                
+
                 // Store master playlist URL
                 if (url.includes('/master') && url.includes('.m3u8')) {
                     console.log('Found master playlist URL:', url);
                     masterUrl = url;
                 }
-                
+
                 // Look for m3u8 URLs directly first (highest priority)
                 if (url.includes('.m3u8') && (url.includes('audio=') || url.includes('video=')) && !foundUrl) {
                     console.log('Found direct m3u8 URL:', url);
@@ -293,19 +293,19 @@ class URLExtractor:
                 else if (url.includes('.ts') && !foundUrl) {
                     try {
                         console.log('Attempting to convert .ts URL to m3u8:', url);
-                        
+
                         // Extract the base part of the URL (before the segment number)
                         if (url.includes('-')) {
                             const baseUrl = url.substring(0, url.lastIndexOf('-'));
                             console.log('Base URL:', baseUrl);
-                            
+
                             // Extract auth token from URL
                             let urlAuthToken = '';
                             if (url.includes('hdntl=')) {
                                 // Try to match the specific format from examples
                                 const hdntlRegex = /hdntl=exp=[0-9]+~acl=[/][*]~data=hdntl~hmac=[a-f0-9]+/g;
                                 const hdntlMatches = url.match(hdntlRegex);
-                                
+
                                 if (hdntlMatches && hdntlMatches.length > 0) {
                                     urlAuthToken = hdntlMatches[0];
                                 } else {
@@ -314,7 +314,7 @@ class URLExtractor:
                             } else if (url.includes('hdnts=')) {
                                 urlAuthToken = 'hdnts=' + url.split('hdnts=')[1].split('&')[0];
                             }
-                            
+
                             if (urlAuthToken) {
                                 authToken = urlAuthToken;  // Save for later use
                                 const m3u8Url = `${baseUrl}.m3u8?${urlAuthToken}`;
@@ -328,7 +328,7 @@ class URLExtractor:
                 }
             }
         """
-    
+
     @staticmethod
     def _get_video_source_script():
         """Search for video sources directly."""
@@ -349,7 +349,7 @@ class URLExtractor:
                 console.error('Error finding video sources:', e);
             }
         """
-    
+
     @staticmethod
     def _get_trigger_video_script():
         """Try to trigger video loading by clicking play buttons."""
@@ -370,7 +370,7 @@ class URLExtractor:
                 console.error('Error finding play buttons:', e);
             }
         """
-    
+
     @staticmethod
     def _get_resolution_script():
         """Resolve and return the final result."""
@@ -384,7 +384,7 @@ class URLExtractor:
                 console.log('Auth Token:', authToken);
                 console.log('JWT Token:', jwtToken);
                 console.log('All URLs:', allUrls.length);
-                
+
                 // If we have video ID and auth token but no direct URL, construct one
                 if (videoId && authToken && !foundUrl) {
                     console.log('Constructing URL from video ID and auth token');
@@ -392,7 +392,7 @@ class URLExtractor:
                     foundUrl = `https://vod-akm.play.hotmart.com/video/${videoId}/hls/${videoId}-audio=2756-video=2292536.m3u8?${authToken}`;
                     console.log('Constructed URL:', foundUrl);
                 }
-                
+
                 resolve({
                     foundUrl, 
                     masterUrl,
@@ -404,15 +404,15 @@ class URLExtractor:
             }, 8000);  // Increased timeout for more time to capture requests
         });
         """
-    
+
     # Use the function from url_utils instead
     extract_video_id_from_iframe = staticmethod(extract_video_id_from_iframe)
-    
+
     @staticmethod
     def process_extraction_result(result, session=None):
         """
         Process the result from the JavaScript extraction to get video URLs.
-        
+
         This method tries multiple approaches in order of preference:
         1. Use the found URL if available
         2. Construct URL from video ID and auth token
@@ -420,46 +420,46 @@ class URLExtractor:
         4. Use master playlist as fallback
         5. Try API with video ID
         6. Construct direct URL as last resort
-        
+
         Args:
             result (dict): The result from executing the JavaScript
             session (requests.Session, optional): Session with authentication cookies
-            
+
         Returns:
             list: List of tuples (part_suffix, video_url)
         """
         video_urls = []
-        
+
         if not isinstance(result, dict):
             return video_urls
-            
+
         # Log all URLs for debugging
         log.debug(f"Found {len(result.get('allUrls', []))} URLs in network requests")
         for url in result.get('allUrls', []):
             log.debug(f"  {url}")
-            
+
         # Try different approaches in order of preference
         if URLExtractor._try_found_url(result, video_urls):
             return video_urls
-            
+
         if URLExtractor._try_construct_from_id_and_token(result, video_urls):
             return video_urls
-            
+
         if URLExtractor._try_jwt_token_api(result, session, video_urls):
             return video_urls
-            
+
         if URLExtractor._try_master_playlist(result, video_urls):
             return video_urls
-            
+
         if URLExtractor._try_api_with_video_id(result, session, video_urls):
             return video_urls
-            
+
         # Last resort: direct URL construction
         if result.get('videoId'):
             URLExtractor._construct_direct_url(result['videoId'], video_urls)
-            
+
         return video_urls
-    
+
     @staticmethod
     def _try_found_url(result, video_urls):
         """Try to use the found URL from extraction result."""
@@ -469,7 +469,7 @@ class URLExtractor:
             video_urls.append(("", result['foundUrl']))
             return True
         return False
-    
+
     @staticmethod
     def _try_construct_from_id_and_token(result, video_urls):
         """Try to construct URL from video ID and auth token."""
@@ -482,7 +482,7 @@ class URLExtractor:
             video_urls.append(("", url))
             return True
         return False
-    
+
     @staticmethod
     def _try_jwt_token_api(result, session, video_urls):
         """Try to get URL from API using JWT token."""
@@ -490,7 +490,7 @@ class URLExtractor:
             video_id = result['videoId']
             jwt_token = result['jwtToken']
             log.debug(f"Trying to get URL using JWT token and video ID: {video_id}")
-            
+
             # Use the get_url_from_api method with the JWT token
             api_url = URLExtractor.get_url_from_api(video_id, session, jwt_token)
             if api_url:
@@ -499,7 +499,7 @@ class URLExtractor:
                 video_urls.append(("", api_url))
                 return True
         return False
-    
+
     @staticmethod
     def _try_master_playlist(result, video_urls):
         """Try to use master playlist as fallback."""
@@ -509,7 +509,7 @@ class URLExtractor:
             video_urls.append(("", result['masterUrl']))
             return True
         return False
-    
+
     @staticmethod
     def _try_api_with_video_id(result, session, video_urls):
         """Try to get URL via API if we have video ID and session."""
@@ -522,7 +522,7 @@ class URLExtractor:
                 video_urls.append(("", api_url))
                 return True
         return False
-    
+
     @staticmethod
     def _construct_direct_url(video_id, video_urls):
         """Construct a direct URL as last resort."""
@@ -531,24 +531,24 @@ class URLExtractor:
         log.info("Constructed video URL directly from video ID")
         video_urls.append(("", direct_url))
         return True
-    
+
     @staticmethod
     def get_url_from_api(video_id, session, jwt_token=None):
         """
         Attempt to get the video URL directly from the Hotmart API.
-        
+
         This method tries multiple API endpoints in sequence:
         1. JWT token API (if token provided)
         2. Player API
         3. Club API
         4. Embed API
         5. Extract token from embed page
-        
+
         Args:
             video_id (str): The video ID
             session (requests.Session): Session with authentication cookies
             jwt_token (str, optional): JWT token for authentication
-            
+
         Returns:
             str: The video URL if successful, None otherwise
         """
@@ -558,39 +558,39 @@ class URLExtractor:
                 url = URLExtractor._try_jwt_token_api_endpoint(video_id, session, jwt_token)
                 if url:
                     return url
-            
+
             # Try player API
             url = URLExtractor._try_player_api(video_id, session)
             if url:
                 return url
-                
+
             # Try club API
             url = URLExtractor._try_club_api(video_id, session)
             if url:
                 return url
-                
+
             # Try embed API
             url = URLExtractor._try_embed_api(video_id, session)
             if url:
                 return url
-                
+
             # Try to extract token from embed page
             url = URLExtractor._try_extract_from_embed_page(video_id, session)
             if url:
                 return url
-            
+
             return None
         except Exception as e:
             log.error(f"Error getting URL from API: {str(e)}", exc_info=True)
             return None
-    
+
     @staticmethod
     def _try_jwt_token_api_endpoint(video_id, session, jwt_token):
         """Try to get URL using JWT token API endpoint."""
         log.debug(f"Trying to get URL using JWT token for video ID: {video_id}")
         jwt_api_url = f"https://cf-embed.play.hotmart.com/video/{video_id}/play?jwt={jwt_token}"
         headers = get_api_headers(video_id)
-        
+
         response = session.get(jwt_api_url, headers=headers)
         if response.status_code == 200:
             try:
@@ -601,7 +601,7 @@ class URLExtractor:
             except:
                 log.warning("Failed to parse JWT API response")
         return None
-    
+
     @staticmethod
     def _try_player_api(video_id, session):
         """Try to get URL using player API."""
@@ -613,7 +613,7 @@ class URLExtractor:
                 log.debug(f"Got URL from player API: {data['url']}")
                 return data['url']
         return None
-    
+
     @staticmethod
     def _try_club_api(video_id, session):
         """Try to get URL using club API."""
@@ -625,13 +625,13 @@ class URLExtractor:
                 log.debug(f"Got URL from club API: {data['url']}")
                 return data['url']
         return None
-    
+
     @staticmethod
     def _try_embed_api(video_id, session):
         """Try to get URL using embed API."""
         embed_api_url = f"https://cf-embed.play.hotmart.com/video/{video_id}/play"
         headers = get_api_headers(video_id)
-        
+
         response = session.get(embed_api_url, headers=headers)
         if response.status_code == 200:
             try:
@@ -642,7 +642,7 @@ class URLExtractor:
             except:
                 log.warning("Failed to parse embed API response")
         return None
-    
+
     @staticmethod
     def _try_extract_from_embed_page(video_id, session):
         """Try to extract token from embed page and construct URL."""
@@ -652,7 +652,7 @@ class URLExtractor:
             'Accept': 'text/html,application/xhtml+xml,application/xml',
             'Referer': 'https://101karategames.club.hotmart.com/'
         })
-        
+
         if response.status_code == 200:
             content = response.text
             token = extract_auth_token(content)

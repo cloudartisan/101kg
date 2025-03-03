@@ -29,7 +29,7 @@ def main():
     parser.add_argument('--headless', action='store_true',
                         help='Run browser in headless mode')
     args = parser.parse_args()
-    
+
     # Set up logging
     log_levels = {
         'debug': logger.DEBUG,
@@ -40,35 +40,35 @@ def main():
     # Use the specified log level for the file, but keep INFO level for console by default
     # unless verbose mode is enabled
     console_level = log_levels[args.log_level] if args.verbose else log_levels['info']
-    
+
     logger.setup_logger(
         level=log_levels[args.log_level],
         log_to_file=not args.no_log_file,
         console_level=console_level
     )
-    
+
     logger.info("Starting 101 Karate Games downloader")
-    
+
     # Initialize downloader
     downloader = VideoDownloader(args.email, args.password, headless=args.headless)
     start_time = time.time()
-    
+
     try:
         # Attempt login
         logger.info("Logging in to Hotmart")
         if not downloader.login():
             logger.error("Failed to login. Exiting...")
             return 1
-        
+
         # Download all lessons
         logger.info("Starting download of all lessons")
         downloader.download_all_lessons()
-        
+
         # Log completion
         elapsed_time = time.time() - start_time
         logger.info(f"Download completed successfully in {elapsed_time:.2f} seconds")
         return 0
-            
+
     except KeyboardInterrupt:
         logger.warning("Download interrupted by user")
         return 130
