@@ -6,6 +6,35 @@ It's separated to make the code more maintainable and to preserve working URL ex
 """
 import re
 import requests
+
+# Try importing logger module, fall back to simple print function if unavailable
+try:
+    import logger
+    log = logger
+except ImportError:
+    # Create a simple fallback logger that just prints
+    class FallbackLogger:
+        @staticmethod
+        def debug(msg, *args, **kwargs): 
+            print(f"DEBUG: {msg}")
+            
+        @staticmethod
+        def info(msg, *args, **kwargs): 
+            print(f"INFO: {msg}")
+            
+        @staticmethod
+        def warning(msg, *args, **kwargs): 
+            print(f"WARNING: {msg}")
+            
+        @staticmethod
+        def error(msg, *args, **kwargs): 
+            print(f"ERROR: {msg}")
+            exc_info = kwargs.get('exc_info', False)
+            if exc_info:
+                import traceback
+                traceback.print_exc()
+    
+    log = FallbackLogger
 from url_utils import (
     HOTMART_CDN_BASE, 
     HOTMART_EMBED_BASE, 
@@ -429,10 +458,10 @@ class URLExtractor:
         if not isinstance(result, dict):
             return video_urls
             
-        # Print all URLs for debugging
-        print(f"Found {len(result.get('allUrls', []))} URLs in network requests")
+        # Log all URLs for debugging
+        log.info(f"Found {len(result.get('allUrls', []))} URLs in network requests")
         for url in result.get('allUrls', []):
-            print(f"  {url}")
+            log.debug(f"  {url}")
             
         # Try different approaches in order of preference
         if URLExtractor._try_found_url(result, video_urls):
@@ -460,7 +489,7 @@ class URLExtractor:
     def _try_found_url(result, video_urls):
         """Try to use the found URL from extraction result."""
         if result.get('foundUrl'):
-            print(f"\nFound URL with auth token: {result['foundUrl']}")
+            log.info(f"Found URL with auth token: {result['foundUrl']}")
             video_urls.append(("", result['foundUrl']))
             return True
         return False
@@ -472,7 +501,7 @@ class URLExtractor:
             video_id = result['videoId']
             auth_token = result['authToken']
             url = construct_video_url(video_id, auth_token)
-            print(f"\nConstructed URL with video ID and auth token: {url}")
+            log.info(f"Constructed URL with video ID and auth token: {url}")
             video_urls.append(("", url))
             return True
         return False
@@ -483,12 +512,12 @@ class URLExtractor:
         if result.get('videoId') and result.get('jwtToken') and session:
             video_id = result['videoId']
             jwt_token = result['jwtToken']
-            print(f"\nTrying to get URL using JWT token and video ID: {video_id}")
+            log.info(f"Trying to get URL using JWT token and video ID: {video_id}")
             
             # Use the get_url_from_api method with the JWT token
             api_url = URLExtractor.get_url_from_api(video_id, session, jwt_token)
             if api_url:
-                print(f"Successfully retrieved URL from API: {api_url}")
+                log.info(f"Successfully retrieved URL from API: {api_url}")
                 video_urls.append(("", api_url))
                 return True
         return False
@@ -497,7 +526,7 @@ class URLExtractor:
     def _try_master_playlist(result, video_urls):
         """Try to use master playlist as fallback."""
         if result.get('masterUrl'):
-            print(f"\nUsing master playlist as fallback: {result['masterUrl']}")
+            log.info(f"Using master playlist as fallback: {result['masterUrl']}")
             video_urls.append(("", result['masterUrl']))
             return True
         return False
@@ -506,10 +535,10 @@ class URLExtractor:
     def _try_api_with_video_id(result, session, video_urls):
         """Try to get URL via API if we have video ID and session."""
         if result.get('videoId') and session:
-            print(f"\nAttempting to get URL via API for video ID: {result['videoId']}")
+            log.info(f"Attempting to get URL via API for video ID: {result['videoId']}")
             api_url = URLExtractor.get_url_from_api(result['videoId'], session)
             if api_url:
-                print(f"Successfully retrieved URL from API: {api_url}")
+                log.info(f"Successfully retrieved URL from API: {api_url}")
                 video_urls.append(("", api_url))
                 return True
         return False
@@ -518,7 +547,7 @@ class URLExtractor:
     def _construct_direct_url(video_id, video_urls):
         """Construct a direct URL as last resort."""
         direct_url = construct_video_url(video_id)
-        print(f"\nConstructing direct URL from video ID (last resort): {direct_url}")
+        log.info(f"Constructing direct URL from video ID (last resort): {direct_url}")
         video_urls.append(("", direct_url))
         return True
     
@@ -571,13 +600,13 @@ class URLExtractor:
             
             return None
         except Exception as e:
-            print(f"Error getting URL from API: {str(e)}")
+            log.error(f"Error getting URL from API: {str(e)}", exc_info=True)
             return None
     
     @staticmethod
     def _try_jwt_token_api_endpoint(video_id, session, jwt_token):
         """Try to get URL using JWT token API endpoint."""
-        print(f"Trying to get URL using JWT token for video ID: {video_id}")
+        log.info(f"Trying to get URL using JWT token for video ID: {video_id}")
         jwt_api_url = f"https://cf-embed.play.hotmart.com/video/{video_id}/play?jwt={jwt_token}"
         headers = get_api_headers(video_id)
         
@@ -586,10 +615,10 @@ class URLExtractor:
             try:
                 data = response.json()
                 if 'url' in data:
-                    print(f"Got URL using JWT token: {data['url']}")
+                    log.info(f"Got URL using JWT token: {data['url']}")
                     return data['url']
             except:
-                print("Failed to parse JWT API response")
+                log.warning("Failed to parse JWT API response")
         return None
     
     @staticmethod
@@ -600,7 +629,7 @@ class URLExtractor:
         if response.status_code == 200:
             data = response.json()
             if 'url' in data:
-                print(f"Got URL from player API: {data['url']}")
+                log.info(f"Got URL from player API: {data['url']}")
                 return data['url']
         return None
     
@@ -612,7 +641,7 @@ class URLExtractor:
         if response.status_code == 200:
             data = response.json()
             if 'url' in data:
-                print(f"Got URL from club API: {data['url']}")
+                log.info(f"Got URL from club API: {data['url']}")
                 return data['url']
         return None
     
@@ -627,10 +656,10 @@ class URLExtractor:
             try:
                 data = response.json()
                 if 'url' in data:
-                    print(f"Got URL from embed API: {data['url']}")
+                    log.info(f"Got URL from embed API: {data['url']}")
                     return data['url']
             except:
-                print("Failed to parse embed API response")
+                log.warning("Failed to parse embed API response")
         return None
     
     @staticmethod
@@ -647,8 +676,8 @@ class URLExtractor:
             content = response.text
             token = extract_auth_token(content)
             if token:
-                print("Found hdntl token in embed page")
+                log.info("Found hdntl token in embed page")
                 url = construct_video_url(video_id, token)
-                print(f"Constructed URL with token from embed page: {url}")
+                log.info(f"Constructed URL with token from embed page: {url}")
                 return url
         return None
