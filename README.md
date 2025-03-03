@@ -1,12 +1,13 @@
 # 101 Karate Games Video Downloader
 
-This repository contains a Python script to automate the login, extraction, and download of videos from Hotmart's 101 Karate Games platform.
+This repository contains Python modules to automate the login, extraction, and download of videos from Hotmart's 101 Karate Games platform.
 
 ## Features
 - Automates login to Hotmart
-- Extracts video URL from lesson pages
+- Extracts video URL from lesson pages using advanced techniques
 - Supports MP4 and HLS (.m3u8) downloads
 - Uses Selenium for browser automation
+- Handles cookie policy popups and other overlays
 
 ## Prerequisites
 - Python 3 installed
@@ -31,15 +32,22 @@ This repository contains a Python script to automate the login, extraction, and 
    ```
 
 ## Usage
-1. **Set your login credentials**:
-   - Edit `download.py` and replace `your_password_here` with your actual Hotmart password.
-
-2. **Run the script**:
+1. **Run the script with your login credentials**:
    ```sh
-   python download.py
+   ./101kg.py --email your_email@example.com --password your_password
    ```
 
-3. **Downloaded videos** will be saved in the `videos/` directory.
+   Or if you prefer using python directly:
+   ```sh
+   python 101kg.py --email your_email@example.com --password your_password
+   ```
+
+2. **Downloaded videos** will be saved in the `videos/` directory.
+
+## Project Structure
+- `101kg.py` - Main entry point script
+- `video_downloader.py` - Core downloader class handling authentication and video extraction
+- `url_extractor.py` - Specialized URL extraction logic
 
 ## Notes
 - The script logs in, navigates to the lesson page, extracts the video URL, and downloads it.
@@ -53,6 +61,7 @@ This repository contains a Python script to automate the login, extraction, and 
   pip install --upgrade selenium webdriver-manager
   ```
 - If login fails, Hotmart may have changed its authentication flow, requiring script adjustments.
+- For cookie popup issues, the script includes automatic handling - if this fails, please report the issue.
 
 ## License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
