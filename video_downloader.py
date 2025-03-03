@@ -376,7 +376,7 @@ class VideoDownloader:
             str: The video URL if successful, None otherwise
         """
         try:
-            log.info(f"Attempting to get video URL from API for video ID: {video_id}")
+            log.debug(f"Attempting to get video URL from API for video ID: {video_id}")
             
             # Use the URLExtractor's get_url_from_api method
             result = URLExtractor.get_url_from_api(video_id, self.session, jwt_token)
@@ -420,7 +420,7 @@ class VideoDownloader:
             log.debug(f"Iframe src: {iframe_src[:100]}...")
             
             video_id = URLExtractor.extract_video_id_from_iframe(iframe_src)
-            log.info(f"Found video ID: {video_id}")
+            log.debug(f"Found video ID: {video_id}")
             
             if not video_id:
                 log.error("Failed to extract video ID from iframe src")
@@ -461,7 +461,7 @@ class VideoDownloader:
         """Extract JWT token from iframe src if present."""
         jwt_token = extract_jwt_token(iframe_src)
         if jwt_token:
-            log.info("Found JWT token in iframe src, might help with authentication")
+            log.debug("Found JWT token in iframe src, might help with authentication")
             log.debug(f"JWT token: {jwt_token[:15]}...")
         return jwt_token
     
@@ -473,7 +473,7 @@ class VideoDownloader:
         video_urls = []
         
         # Try to get the video directly using the JWT token as authentication
-        log.info("Trying to use JWT token to get a direct URL")
+        log.debug("Trying to use JWT token to get a direct URL")
         direct_jwt_url = f"https://cf-embed.play.hotmart.com/video/{video_id}/play?jwt={jwt_token}"
         log.debug(f"JWT direct URL: {direct_jwt_url[:80]}...")
         response = self.session.get(direct_jwt_url, headers={
@@ -499,7 +499,7 @@ class VideoDownloader:
         embed_url = construct_embed_url(video_id, jwt_token)
         
         # Load the embed page in the browser to capture network requests
-        log.info(f"Loading embed page in browser for network request capture")
+        log.debug(f"Loading embed page in browser for network request capture")
         self.driver.get(embed_url)
         time.sleep(5)  # Wait for page to load
         
@@ -515,7 +515,7 @@ class VideoDownloader:
         """
         
         network_requests = self.driver.execute_script(script)
-        log.info(f"Found {len(network_requests)} network requests to Hotmart CDN")
+        log.debug(f"Found {len(network_requests)} network requests to Hotmart CDN")
         
         # Look for m3u8 URLs with hdntl token
         for request in network_requests:
@@ -528,7 +528,7 @@ class VideoDownloader:
         # If we didn't find a direct m3u8 URL, look for any URL with hdntl token
         for request in network_requests:
             if 'hdntl=' in request:
-                log.info("Found URL with hdntl token")
+                log.debug("Found URL with hdntl token")
                 log.debug(f"Token URL: {request[:100]}...")
                 # Extract the hdntl token
                 token = extract_auth_token(request)
@@ -591,7 +591,7 @@ class VideoDownloader:
         self.driver.switch_to.frame(iframe)
         
         # Use the extraction script from the URLExtractor module
-        log.info("Executing URL extraction script")
+        log.debug("Executing URL extraction script")
         script = URLExtractor.get_extraction_script()
         
         # Execute script and wait for URL
@@ -602,7 +602,7 @@ class VideoDownloader:
             result['jwtToken'] = jwt_token
             log.debug("Added JWT token to extraction result")
         
-        log.info("Processing extraction results")
+        log.debug("Processing extraction results")
         # Process the result using the URLExtractor, passing the session for API fallback
         video_urls = URLExtractor.process_extraction_result(result, self.session)
         
@@ -617,7 +617,7 @@ class VideoDownloader:
         
         # Try to get the URL directly from the embed page
         embed_url = construct_embed_url(video_id, jwt_token)
-        log.info("Fetching embed page content directly")
+        log.debug("Fetching embed page content directly")
         log.debug(f"Embed URL: {embed_url}")
         
         response = self.session.get(embed_url, headers={
@@ -636,7 +636,7 @@ class VideoDownloader:
         token = extract_auth_token(content)
         
         if token:
-            log.info("Found hdntl token in embed page content")
+            log.debug("Found hdntl token in embed page content")
             log.debug(f"Token: {token[:50] if len(token) > 50 else token}...")
             direct_url = construct_video_url(video_id, token)
             log.info("Successfully constructed URL with token from embed page")
@@ -652,7 +652,7 @@ class VideoDownloader:
         
         # Navigate to the embed page directly
         embed_url = construct_embed_url(video_id, jwt_token)
-        log.info("Loading embed page in browser for network monitoring")
+        log.debug("Loading embed page in browser for network monitoring")
         log.debug(f"Embed URL: {embed_url}")
         
         self.driver.get(embed_url)
@@ -674,7 +674,7 @@ class VideoDownloader:
         
         for request in network_requests:
             if 'hdntl=' in request:
-                log.info("Found network request with hdntl token")
+                log.debug("Found network request with hdntl token")
                 log.debug(f"Request: {request[:100]}...")
                 # Extract the token
                 token = extract_auth_token(request)
@@ -757,14 +757,14 @@ class VideoDownloader:
             }
             
             # Use our session to load the playlist
-            log.info("Fetching M3U8 playlist")
+            log.debug("Fetching M3U8 playlist")
             playlist_response = self.session.get(video_url, headers=headers)
             if not playlist_response.ok:
                 log.error(f"Failed to load playlist: {playlist_response.status_code}")
                 log.error(f"Response: {playlist_response.text}")
                 raise Exception(f"Failed to load playlist: {playlist_response.status_code}")
                 
-            log.info("Parsing M3U8 playlist")
+            log.debug("Parsing M3U8 playlist")
             playlist = m3u8.loads(playlist_response.text)
             output_path = os.path.join(self.download_dir, f"{filename}.mp4")
             log.debug(f"Output path: {output_path}")
@@ -774,11 +774,11 @@ class VideoDownloader:
             
             # Try primary ffmpeg method
             try:
-                log.info("Using primary ffmpeg-python method for download")
+                log.debug("Using primary ffmpeg-python method for download")
                 self._download_with_ffmpeg_python(video_url, output_path, headers_arg)
             except Exception as e:
                 log.warning(f"Primary ffmpeg method failed: {str(e)}")
-                log.info("Falling back to ffmpeg subprocess method")
+                log.debug("Falling back to ffmpeg subprocess method")
                 self._download_with_ffmpeg_subprocess(video_url, output_path)
             
         except Exception as e:
@@ -807,7 +807,7 @@ class VideoDownloader:
     
     def _download_with_ffmpeg_python(self, video_url, output_path, headers_arg):
         """Download video using ffmpeg-python library."""
-        log.info(f"Starting ffmpeg download to {output_path}")
+        log.debug(f"Starting ffmpeg download to {output_path}")
         stream = ffmpeg.input(
             video_url,
             headers=headers_arg
@@ -819,7 +819,7 @@ class VideoDownloader:
     
     def _download_with_ffmpeg_subprocess(self, video_url, output_path):
         """Download video using direct ffmpeg subprocess call as fallback."""
-        log.info("Using ffmpeg subprocess method as fallback")
+        log.debug("Using ffmpeg subprocess method as fallback")
         cookie_header = '; '.join([f"{c.name}={c.value}" for c in self.session.cookies])
         
         cmd = [
