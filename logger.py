@@ -19,13 +19,15 @@ CRITICAL = logging.CRITICAL
 _logger = None
 
 
-def setup_logger(level=logging.INFO, log_to_file=True):
+def setup_logger(level=logging.INFO, log_to_file=True, console_level=None):
     """
     Set up the logger with the specified configuration.
 
     Args:
         level (int): The logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         log_to_file (bool): Whether to log to a file in addition to console
+        console_level (int, optional): Separate logging level for console output.
+                                      If None, uses the same level as specified in 'level'.
 
     Returns:
         logging.Logger: Configured logger instance
@@ -42,7 +44,7 @@ def setup_logger(level=logging.INFO, log_to_file=True):
 
     # Create console handler
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(level)
+    console_handler.setLevel(console_level if console_level is not None else level)
 
     # Create formatter
     formatter = logging.Formatter(

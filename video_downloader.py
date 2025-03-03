@@ -27,34 +27,9 @@ from url_utils import (
     construct_embed_url
 )
 
-# Try importing logger module, fall back to simple print function if unavailable
-try:
-    import logger
-    log = logger
-except ImportError:
-    # Create a simple fallback logger that just prints
-    class FallbackLogger:
-        @staticmethod
-        def debug(msg, *args, **kwargs): 
-            print(f"DEBUG: {msg}")
-            
-        @staticmethod
-        def info(msg, *args, **kwargs): 
-            print(f"INFO: {msg}")
-            
-        @staticmethod
-        def warning(msg, *args, **kwargs): 
-            print(f"WARNING: {msg}")
-            
-        @staticmethod
-        def error(msg, *args, **kwargs): 
-            print(f"ERROR: {msg}")
-            exc_info = kwargs.get('exc_info', False)
-            if exc_info:
-                import traceback
-                traceback.print_exc()
-    
-    log = FallbackLogger
+# Import the logger module
+import logger
+log = logger
 
 
 class VideoDownloader:
