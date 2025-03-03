@@ -10,11 +10,9 @@ import requests
 import m3u8
 import ffmpeg
 import re
-from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
 from url_extractor import URLExtractor
 from url_utils import (
     HOTMART_CDN_BASE,
@@ -26,6 +24,7 @@ from url_utils import (
     construct_video_url,
     construct_embed_url
 )
+from browser_manager import BrowserManager
 
 # Import the logger module
 import logger
@@ -38,13 +37,14 @@ class VideoDownloader:
     Handles authentication, navigation, URL extraction, and video downloading.
     """
     
-    def __init__(self, email, password):
+    def __init__(self, email, password, headless=False):
         """
         Initialize the downloader with user credentials.
         
         Args:
             email (str): User's email for Hotmart login
             password (str): User's password for Hotmart login
+            headless (bool): Whether to run the browser in headless mode
         """
         # URLs and credentials
         self.base_url = "https://101karategames.club.hotmart.com"
@@ -60,214 +60,12 @@ class VideoDownloader:
         # Initialize HTTP session
         self.session = requests.Session()
         
-        # Initialize browser
-        self._setup_browser()
-    
-    def _setup_browser(self):
-        """Set up the Chrome browser with appropriate options and cookies."""
-        chrome_options = webdriver.ChromeOptions()
-        chrome_options.add_argument("--start-maximized")
-        chrome_options.add_argument("--disable-notifications")
-        chrome_options.add_argument("--disable-popup-blocking")
-        chrome_options.add_argument("--disable-infobars")
-        chrome_options.add_argument("--disable-extensions")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
+        # Initialize browser manager
+        self.browser_manager = BrowserManager(headless=headless)
+        self.driver = self.browser_manager.initialize()
         
-        # Add user agent to ensure compatibility
-        chrome_options.add_argument("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
-        
-        try:
-            # First try to create a driver without specifying the path (using system Chrome)
-            self.driver = webdriver.Chrome(options=chrome_options)
-        except Exception as e:
-            log.warning(f"Failed to create Chrome driver with default settings: {e}")
-            try:
-                # Create driver with configured options using ChromeDriverManager as fallback
-                from selenium.webdriver.chrome.service import Service as ChromeService
-                from webdriver_manager.chrome import ChromeDriverManager
-                
-                # Get the driver path but don't automatically install
-                driver_path = ChromeDriverManager().install()
-                
-                # If the path contains THIRD_PARTY_NOTICES, adjust to find the actual executable
-                if "THIRD_PARTY_NOTICES" in driver_path:
-                    import os
-                    driver_dir = os.path.dirname(driver_path)
-                    for file in os.listdir(driver_dir):
-                        if file.startswith("chromedriver") and not file.endswith(".zip") and not file.endswith(".md"):
-                            driver_path = os.path.join(driver_dir, file)
-                            break
-                
-                service = ChromeService(executable_path=driver_path)
-                self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            except Exception as inner_e:
-                log.warning(f"Failed to create Chrome driver with ChromeDriverManager: {inner_e}")
-                
-                # Last resort - try standard Chrome path by OS
-                import platform
-                if platform.system() == "Darwin":  # macOS
-                    if platform.machine() == "arm64":
-                        driver_path = "/usr/local/bin/chromedriver"
-                    else:
-                        driver_path = "/usr/local/bin/chromedriver"
-                elif platform.system() == "Linux":
-                    driver_path = "/usr/bin/chromedriver"
-                else:  # Windows
-                    driver_path = "C:\\Program Files\\Google\\Chrome\\Application\\chromedriver.exe"
-                
-                service = ChromeService(executable_path=driver_path)
-                self.driver = webdriver.Chrome(service=service, options=chrome_options)
-        
-        # Set window size explicitly
-        self.driver.set_window_size(1366, 768)
-        
-        # Set initial cookies to prevent popups
-        self.driver.get(self.base_url)
-        time.sleep(5)  # Wait for page to load
-        self._set_initial_cookies()
-    
-    def _set_initial_cookies(self):
-        """Set initial cookies to prevent popups and improve user experience."""
-        cookie_settings = [
-            {'name': 'cookie-policy-accepted', 'value': 'true', 'domain': '.hotmart.com'},
-            {'name': 'cookie-policy-preferences', 'value': 'true', 'domain': '.hotmart.com'},
-            {'name': 'hotmart-cookie-policy', 'value': 'accepted', 'domain': '.hotmart.com'}
-        ]
-        
-        for cookie in cookie_settings:
-            try:
-                self.driver.add_cookie(cookie)
-            except Exception as e:
-                log.warning(f"Could not add cookie {cookie['name']}: {str(e)}")
-                
-    def _handle_cookie_policy_popup(self):
-        """Handle cookie policy popup if it exists by clicking on accept buttons."""
-        try:
-            # Wait only a short time since we don't want to slow things down if there's no popup
-            wait = WebDriverWait(self.driver, 3)
-            
-            # First try by ID
-            try:
-                # Check if the cookie policy container exists
-                cookie_container = self.driver.find_element(By.ID, "hotmart-cookie-policy")
-                if cookie_container.is_displayed():
-                    log.info("Found cookie policy popup, attempting to accept...")
-                    
-                    # Try different accept button selectors
-                    selectors = [
-                        "button.accept-button", 
-                        "button.accept", 
-                        "button.agree", 
-                        ".accept-cookies-button",
-                        "button[data-action='accept']",
-                        ".cookie-accept-button",
-                        "#acceptCookies"
-                    ]
-                    
-                    for selector in selectors:
-                        try:
-                            accept_button = self.driver.find_element(By.CSS_SELECTOR, selector)
-                            if accept_button.is_displayed():
-                                self.driver.execute_script("arguments[0].click();", accept_button)
-                                log.debug(f"Clicked cookie accept button with selector: {selector}")
-                                time.sleep(1)  # Wait for the popup to disappear
-                                return True
-                        except:
-                            continue
-                    
-                    # If we can't find a specific button, try clicking on the container itself
-                    self.driver.execute_script("""
-                        var cookieDiv = document.getElementById('hotmart-cookie-policy');
-                        if (cookieDiv) {
-                            var buttons = cookieDiv.getElementsByTagName('button');
-                            for (var i = 0; i < buttons.length; i++) {
-                                if (buttons[i].innerText.toLowerCase().includes('accept') || 
-                                    buttons[i].innerText.toLowerCase().includes('agree') ||
-                                    buttons[i].innerText.toLowerCase().includes('aceitar')) {
-                                    buttons[i].click();
-                                    return true;
-                                }
-                            }
-                        }
-                        return false;
-                    """)
-                    time.sleep(1)  # Wait for the popup to disappear
-            except:
-                pass
-                
-            # Try other common cookie consent popup classes/IDs
-            cookie_selectors = [
-                ".cookie-notice", 
-                "#cookie-notice", 
-                ".cookie-banner", 
-                "#cookie-banner",
-                ".cookie-consent",
-                "#cookie-consent",
-                ".cookie-policy",
-                "#cookie-policy"
-            ]
-            
-            for selector in cookie_selectors:
-                try:
-                    cookie_element = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    if cookie_element.is_displayed():
-                        # Try to find and click an accept button within this element
-                        accept_buttons = cookie_element.find_elements(By.CSS_SELECTOR, 
-                            "button, .accept, .agree, [data-action='accept'], .accept-button"
-                        )
-                        for button in accept_buttons:
-                            if button.is_displayed():
-                                self.driver.execute_script("arguments[0].click();", button)
-                                log.debug(f"Clicked cookie accept button in {selector}")
-                                time.sleep(1)  # Wait for the popup to disappear
-                                return True
-                except:
-                    continue
-                    
-            # If we reached here, try some JavaScript tricks to handle and dismiss popups
-            self.driver.execute_script("""
-                // Try to handle cookie banners by common class/ID names
-                var banners = [
-                    'cookie-banner', 'cookie-notice', 'cookie-policy', 'cookie-consent',
-                    'cookie-popup', 'cookie-message', 'cookie-notification', 'cookie-alert'
-                ];
-                
-                // Try to find and click accept buttons in any of these containers
-                for (var i = 0; i < banners.length; i++) {
-                    var elements = document.getElementsByClassName(banners[i]);
-                    if (elements.length === 0) {
-                        elements = [document.getElementById(banners[i])];
-                    }
-                    
-                    for (var j = 0; j < elements.length; j++) {
-                        if (elements[j]) {
-                            var buttons = elements[j].querySelectorAll('button, .btn, a.accept, a.agree');
-                            for (var k = 0; k < buttons.length; k++) {
-                                if (buttons[k].innerText.toLowerCase().includes('accept') || 
-                                    buttons[k].innerText.toLowerCase().includes('agree') ||
-                                    buttons[k].innerText.toLowerCase().includes('aceitar')) {
-                                    buttons[k].click();
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // If we reach here, try to just hide any cookie policy containers
-                var policy = document.getElementById('hotmart-cookie-policy');
-                if (policy) {
-                    policy.style.display = 'none';
-                    policy.style.visibility = 'hidden';
-                    policy.style.zIndex = '-999999';
-                }
-            """)
-            
-            return False
-        except Exception as e:
-            log.warning(f"Error handling cookie popup: {str(e)}")
-            return False
+        if not self.driver:
+            raise Exception("Failed to initialize browser")
 
     def login(self):
         """
@@ -277,6 +75,7 @@ class VideoDownloader:
             bool: True if login successful, False otherwise
         """
         try:
+            log.info("Navigating to login page")
             self.driver.get(self.login_url)
             wait = WebDriverWait(self.driver, 30)  # Increased timeout
             
@@ -284,52 +83,80 @@ class VideoDownloader:
             time.sleep(8)  # Increased wait time
             
             # Handle cookie policy popup if it exists
-            self._handle_cookie_policy_popup()
+            self.browser_manager.handle_cookie_policy_popup()
             
             # Fill login form - use more generic selectors with better waits
-            email_field = wait.until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='text'], input[type='email'], input.form-control"))
+            log.info("Filling login credentials")
+            email_field = self.browser_manager.wait_for_element(
+                By.CSS_SELECTOR, 
+                "input[type='text'], input[type='email'], input.form-control",
+                condition="clickable"
             )
+            if not email_field:
+                raise Exception("Email field not found")
+                
             email_field.clear()
             email_field.send_keys(self.email)
             
-            password_field = wait.until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='password']"))
+            password_field = self.browser_manager.wait_for_element(
+                By.CSS_SELECTOR, 
+                "input[type='password']",
+                condition="clickable"
             )
+            if not password_field:
+                raise Exception("Password field not found")
+                
             password_field.clear()
             password_field.send_keys(self.password)
             
             # Make sure cookie popups are handled again before clicking
-            self._handle_cookie_policy_popup()
+            self.browser_manager.handle_cookie_policy_popup()
             
             # Try different button selectors to handle possible variations
-            try:
-                # First try the specific selector with JavaScript click to bypass any overlays
-                login_button = wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "button.btn-login[data-test='submit']"))
-                )
+            log.info("Attempting to click login button")
+            login_successful = False
+            
+            # First try the specific selector with JavaScript click to bypass any overlays
+            login_button = self.browser_manager.wait_for_element(
+                By.CSS_SELECTOR, 
+                "button.btn-login[data-test='submit']"
+            )
+            if login_button:
                 self.driver.execute_script("arguments[0].click();", login_button)
-            except Exception as e:
-                log.warning(f"Could not find specific login button, trying alternative selectors: {str(e)}")
-                try:
-                    # Try more generic selectors with JavaScript click
-                    login_button = wait.until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "button[type='submit'], button.btn-primary, button.login-button"))
-                    )
+                login_successful = True
+            
+            # If first attempt failed, try generic selectors
+            if not login_successful:
+                log.debug("Could not find specific login button, trying alternative selectors")
+                login_button = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR,
+                    "button[type='submit'], button.btn-primary, button.login-button"
+                )
+                if login_button:
                     self.driver.execute_script("arguments[0].click();", login_button)
-                except Exception as inner_e:
-                    log.warning(f"Still couldn't find login button, trying by XPath: {str(inner_e)}")
-                    # Try to find button by XPath with contains text
-                    login_button = wait.until(
-                        EC.presence_of_element_located((By.XPATH, "//button[contains(text(), 'Login') or contains(text(), 'Entrar') or contains(text(), 'Sign in')]"))
-                    )
+                    login_successful = True
+            
+            # If still failed, try by text content
+            if not login_successful:
+                log.debug("Still couldn't find login button, trying by XPath")
+                login_button = self.browser_manager.wait_for_element(
+                    By.XPATH,
+                    "//button[contains(text(), 'Login') or contains(text(), 'Entrar') or contains(text(), 'Sign in')]"
+                )
+                if login_button:
                     self.driver.execute_script("arguments[0].click();", login_button)
+                    login_successful = True
+            
+            if not login_successful:
+                raise Exception("Could not find or click login button")
             
             # Wait for login to complete
+            log.info("Waiting for login to complete")
             time.sleep(10)  # Increased wait time
 
             # Transfer cookies from Selenium to requests session
             self._transfer_cookies_to_session()
+            log.info("Login successful")
 
             return True
             
@@ -561,7 +388,7 @@ class VideoDownloader:
         time.sleep(5)
         
         # Handle any cookie policy popups before interacting with the page
-        self._handle_cookie_policy_popup()
+        self.browser_manager.handle_cookie_policy_popup()
         
         # Find the iframe again
         wait = WebDriverWait(self.driver, 15)
@@ -843,7 +670,7 @@ class VideoDownloader:
 
     def close(self):
         """Close the browser."""
-        self.driver.quit()
+        self.browser_manager.close()
 
     def get_lesson_title(self):
         """

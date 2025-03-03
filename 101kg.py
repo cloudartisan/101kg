@@ -26,6 +26,8 @@ def main():
                         help='Disable logging to file')
     parser.add_argument('--verbose', action='store_true',
                         help='Use the same log level for console as for the log file')
+    parser.add_argument('--headless', action='store_true',
+                        help='Run browser in headless mode')
     args = parser.parse_args()
     
     # Set up logging
@@ -48,7 +50,7 @@ def main():
     logger.info("Starting 101 Karate Games downloader")
     
     # Initialize downloader
-    downloader = VideoDownloader(args.email, args.password)
+    downloader = VideoDownloader(args.email, args.password, headless=args.headless)
     start_time = time.time()
     
     try:
