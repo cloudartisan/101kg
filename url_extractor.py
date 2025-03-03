@@ -657,7 +657,7 @@ class URLExtractor:
             content = response.text
             token = extract_auth_token(content)
             if token:
-                log.debug("Found hdntl token in embed page")
+                log.info("Found hdntl token in embed page")
                 url = construct_video_url(video_id, token)
                 log.debug(f"Constructed URL with token from embed page: {url}")
                 log.info("Successfully extracted video URL from embed page")
