@@ -4,16 +4,37 @@ URL Extractor Module for Hotmart Video Downloads
 This module contains the functionality to extract video URLs from Hotmart's video player.
 It's separated to make the code more maintainable and to preserve working URL extraction logic.
 """
+import re
 import requests
 
+
 class URLExtractor:
+    """
+    Class for extracting video URLs from Hotmart's platform.
+    Contains methods for JavaScript injection, API calls, and URL construction.
+    """
+    
+    # Constants for URL patterns
+    HOTMART_CDN_BASE = "https://vod-akm.play.hotmart.com/video"
+    HOTMART_EMBED_BASE = "https://cf-embed.play.hotmart.com/embed"
+    HOTMART_PLAYER_API = "https://api-player.hotmart.com/v1/content/video"
+    HOTMART_CLUB_API = "https://api-club.hotmart.com/hot-club-api/rest/v3/content/video"
+    
+    # Common headers for requests
+    DEFAULT_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
+        'Accept': 'application/json',
+        'Origin': 'https://cf-embed.play.hotmart.com',
+        'Referer': 'https://cf-embed.play.hotmart.com/'
+    }
+    
     @staticmethod
     def get_extraction_script():
         """
         Returns the JavaScript code that intercepts network requests to find video URLs.
         
         This script:
-        1. Intercepts fetch requests
+        1. Intercepts fetch and XMLHttpRequest requests
         2. Looks for video URLs from the Hotmart CDN
         3. Extracts and constructs proper m3u8 URLs with auth tokens
         
@@ -332,7 +353,7 @@ class URLExtractor:
             iframe_src (str): The src attribute of the iframe
             
         Returns:
-            str: The extracted video ID
+            str: The extracted video ID, or None if not found
         """
         try:
             return iframe_src.split('/embed/')[1].split('?')[0]
@@ -342,7 +363,15 @@ class URLExtractor:
     @staticmethod
     def process_extraction_result(result, session=None):
         """
-        Process the result from the JavaScript extraction.
+        Process the result from the JavaScript extraction to get video URLs.
+        
+        This method tries multiple approaches in order of preference:
+        1. Use the found URL if available
+        2. Construct URL from video ID and auth token
+        3. Get URL from API using JWT token
+        4. Use master playlist as fallback
+        5. Try API with video ID
+        6. Construct direct URL as last resort
         
         Args:
             result (dict): The result from executing the JavaScript
@@ -353,69 +382,113 @@ class URLExtractor:
         """
         video_urls = []
         
-        if isinstance(result, dict):
-            # Print all URLs for debugging
-            print(f"Found {len(result.get('allUrls', []))} URLs in network requests")
-            for url in result.get('allUrls', []):
-                print(f"  {url}")
-                
-            # Add the found URL if available (highest priority)
-            if result.get('foundUrl'):
-                print(f"\nFound URL with auth token: {result['foundUrl']}")
-                video_urls.append(("", result['foundUrl']))
-                return video_urls
-                
-            # If we have video ID and auth token, construct a URL
-            elif result.get('videoId') and result.get('authToken'):
-                video_id = result['videoId']
-                auth_token = result['authToken']
-                url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{auth_token}"
-                print(f"\nConstructed URL with video ID and auth token: {url}")
-                video_urls.append(("", url))
-                return video_urls
-                
-            # If we have video ID and JWT token, try to get the URL from the API
-            elif result.get('videoId') and result.get('jwtToken') and session:
-                video_id = result['videoId']
-                jwt_token = result['jwtToken']
-                print(f"\nTrying to get URL using JWT token and video ID: {video_id}")
-                
-                # Use the get_url_from_api method with the JWT token
-                api_url = URLExtractor.get_url_from_api(video_id, session, jwt_token)
-                if api_url:
-                    print(f"Successfully retrieved URL from API: {api_url}")
-                    video_urls.append(("", api_url))
-                    return video_urls
-                
-            # Fallback to master playlist if available
-            elif result.get('masterUrl'):
-                print(f"\nUsing master playlist as fallback: {result['masterUrl']}")
-                video_urls.append(("", result['masterUrl']))
-                return video_urls
-                
-            # Last resort: try to get URL via API if we have video ID and session
-            elif result.get('videoId') and session:
-                print(f"\nAttempting to get URL via API for video ID: {result['videoId']}")
-                api_url = URLExtractor.get_url_from_api(result['videoId'], session)
-                if api_url:
-                    print(f"Successfully retrieved URL from API: {api_url}")
-                    video_urls.append(("", api_url))
-                    return video_urls
-                    
-            # If we still don't have a URL but have a video ID, try a direct construction
-            elif result.get('videoId'):
-                video_id = result['videoId']
-                # Try a simpler URL format as absolute last resort
-                direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8"
-                print(f"\nConstructing direct URL from video ID (last resort): {direct_url}")
-                video_urls.append(("", direct_url))
-                
+        if not isinstance(result, dict):
+            return video_urls
+            
+        # Print all URLs for debugging
+        print(f"Found {len(result.get('allUrls', []))} URLs in network requests")
+        for url in result.get('allUrls', []):
+            print(f"  {url}")
+            
+        # Try different approaches in order of preference
+        if URLExtractor._try_found_url(result, video_urls):
+            return video_urls
+            
+        if URLExtractor._try_construct_from_id_and_token(result, video_urls):
+            return video_urls
+            
+        if URLExtractor._try_jwt_token_api(result, session, video_urls):
+            return video_urls
+            
+        if URLExtractor._try_master_playlist(result, video_urls):
+            return video_urls
+            
+        if URLExtractor._try_api_with_video_id(result, session, video_urls):
+            return video_urls
+            
+        # Last resort: direct URL construction
+        if result.get('videoId'):
+            URLExtractor._construct_direct_url(result['videoId'], video_urls)
+            
         return video_urls
+    
+    @staticmethod
+    def _try_found_url(result, video_urls):
+        """Try to use the found URL from extraction result."""
+        if result.get('foundUrl'):
+            print(f"\nFound URL with auth token: {result['foundUrl']}")
+            video_urls.append(("", result['foundUrl']))
+            return True
+        return False
+    
+    @staticmethod
+    def _try_construct_from_id_and_token(result, video_urls):
+        """Try to construct URL from video ID and auth token."""
+        if result.get('videoId') and result.get('authToken'):
+            video_id = result['videoId']
+            auth_token = result['authToken']
+            url = f"{URLExtractor.HOTMART_CDN_BASE}/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{auth_token}"
+            print(f"\nConstructed URL with video ID and auth token: {url}")
+            video_urls.append(("", url))
+            return True
+        return False
+    
+    @staticmethod
+    def _try_jwt_token_api(result, session, video_urls):
+        """Try to get URL from API using JWT token."""
+        if result.get('videoId') and result.get('jwtToken') and session:
+            video_id = result['videoId']
+            jwt_token = result['jwtToken']
+            print(f"\nTrying to get URL using JWT token and video ID: {video_id}")
+            
+            # Use the get_url_from_api method with the JWT token
+            api_url = URLExtractor.get_url_from_api(video_id, session, jwt_token)
+            if api_url:
+                print(f"Successfully retrieved URL from API: {api_url}")
+                video_urls.append(("", api_url))
+                return True
+        return False
+    
+    @staticmethod
+    def _try_master_playlist(result, video_urls):
+        """Try to use master playlist as fallback."""
+        if result.get('masterUrl'):
+            print(f"\nUsing master playlist as fallback: {result['masterUrl']}")
+            video_urls.append(("", result['masterUrl']))
+            return True
+        return False
+    
+    @staticmethod
+    def _try_api_with_video_id(result, session, video_urls):
+        """Try to get URL via API if we have video ID and session."""
+        if result.get('videoId') and session:
+            print(f"\nAttempting to get URL via API for video ID: {result['videoId']}")
+            api_url = URLExtractor.get_url_from_api(result['videoId'], session)
+            if api_url:
+                print(f"Successfully retrieved URL from API: {api_url}")
+                video_urls.append(("", api_url))
+                return True
+        return False
+    
+    @staticmethod
+    def _construct_direct_url(video_id, video_urls):
+        """Construct a direct URL as last resort."""
+        direct_url = f"{URLExtractor.HOTMART_CDN_BASE}/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8"
+        print(f"\nConstructing direct URL from video ID (last resort): {direct_url}")
+        video_urls.append(("", direct_url))
+        return True
     
     @staticmethod
     def get_url_from_api(video_id, session, jwt_token=None):
         """
         Attempt to get the video URL directly from the Hotmart API.
+        
+        This method tries multiple API endpoints in sequence:
+        1. JWT token API (if token provided)
+        2. Player API
+        3. Club API
+        4. Embed API
+        5. Extract token from embed page
         
         Args:
             video_id (str): The video ID
@@ -426,95 +499,125 @@ class URLExtractor:
             str: The video URL if successful, None otherwise
         """
         try:
-            # If we have a JWT token, try to use it first
+            # Try JWT token approach
             if jwt_token:
-                print(f"Trying to get URL using JWT token for video ID: {video_id}")
-                jwt_api_url = f"https://cf-embed.play.hotmart.com/video/{video_id}/play?jwt={jwt_token}"
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json',
-                    'Origin': 'https://cf-embed.play.hotmart.com',
-                    'Referer': f'https://cf-embed.play.hotmart.com/embed/{video_id}'
-                }
+                url = URLExtractor._try_jwt_token_api_endpoint(video_id, session, jwt_token)
+                if url:
+                    return url
+            
+            # Try player API
+            url = URLExtractor._try_player_api(video_id, session)
+            if url:
+                return url
                 
-                response = session.get(jwt_api_url, headers=headers)
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                        if 'url' in data:
-                            print(f"Got URL using JWT token: {data['url']}")
-                            return data['url']
-                    except:
-                        print("Failed to parse JWT API response")
-            
-            # First try the player API
-            player_api_url = f"https://api-player.hotmart.com/v1/content/video/{video_id}/play"
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
-                'Accept': 'application/json',
-                'Origin': 'https://cf-embed.play.hotmart.com',
-                'Referer': 'https://cf-embed.play.hotmart.com/'
-            }
-            
-            response = session.get(player_api_url, headers=headers)
-            if response.status_code == 200:
-                data = response.json()
-                if 'url' in data:
-                    print(f"Got URL from player API: {data['url']}")
-                    return data['url']
-            
-            # Then try the club API
-            club_api_url = f"https://api-club.hotmart.com/hot-club-api/rest/v3/content/video/{video_id}/play"
-            response = session.get(club_api_url, headers=headers)
-            if response.status_code == 200:
-                data = response.json()
-                if 'url' in data:
-                    print(f"Got URL from club API: {data['url']}")
-                    return data['url']
-            
-            # Try the direct embed API
-            embed_api_url = f"https://cf-embed.play.hotmart.com/video/{video_id}/play"
-            response = session.get(embed_api_url, headers={
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
-                'Accept': 'application/json',
-                'Origin': 'https://cf-embed.play.hotmart.com',
-                'Referer': f'https://cf-embed.play.hotmart.com/embed/{video_id}'
-            })
-            
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                    if 'url' in data:
-                        print(f"Got URL from embed API: {data['url']}")
-                        return data['url']
-                except:
-                    print("Failed to parse embed API response")
-            
-            # Try to get the token from the embed page
-            embed_url = f"https://cf-embed.play.hotmart.com/embed/{video_id}"
-            response = session.get(embed_url, headers={
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
-                'Accept': 'text/html,application/xhtml+xml,application/xml',
-                'Referer': 'https://101karategames.club.hotmart.com/'
-            })
-            
-            if response.status_code == 200:
-                content = response.text
-                if 'hdntl=' in content:
-                    print("Found hdntl token in embed page")
-                    token_start = content.find('hdntl=')
-                    if token_start > 0:
-                        token_end = content.find('"', token_start)
-                        if token_end < 0:
-                            token_end = content.find("'", token_start)
-                        if token_end > 0:
-                            token = content[token_start:token_end]
-                            url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
-                            print(f"Constructed URL with token from embed page: {url}")
-                            return url
+            # Try club API
+            url = URLExtractor._try_club_api(video_id, session)
+            if url:
+                return url
+                
+            # Try embed API
+            url = URLExtractor._try_embed_api(video_id, session)
+            if url:
+                return url
+                
+            # Try to extract token from embed page
+            url = URLExtractor._try_extract_from_embed_page(video_id, session)
+            if url:
+                return url
             
             return None
         except Exception as e:
             print(f"Error getting URL from API: {str(e)}")
             return None
+    
+    @staticmethod
+    def _try_jwt_token_api_endpoint(video_id, session, jwt_token):
+        """Try to get URL using JWT token API endpoint."""
+        print(f"Trying to get URL using JWT token for video ID: {video_id}")
+        jwt_api_url = f"https://cf-embed.play.hotmart.com/video/{video_id}/play?jwt={jwt_token}"
+        headers = URLExtractor.DEFAULT_HEADERS.copy()
+        headers.update({
+            'Content-Type': 'application/json',
+            'Referer': f'{URLExtractor.HOTMART_EMBED_BASE}/{video_id}'
+        })
+        
+        response = session.get(jwt_api_url, headers=headers)
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                if 'url' in data:
+                    print(f"Got URL using JWT token: {data['url']}")
+                    return data['url']
+            except:
+                print("Failed to parse JWT API response")
+        return None
+    
+    @staticmethod
+    def _try_player_api(video_id, session):
+        """Try to get URL using player API."""
+        player_api_url = f"{URLExtractor.HOTMART_PLAYER_API}/{video_id}/play"
+        response = session.get(player_api_url, headers=URLExtractor.DEFAULT_HEADERS)
+        if response.status_code == 200:
+            data = response.json()
+            if 'url' in data:
+                print(f"Got URL from player API: {data['url']}")
+                return data['url']
+        return None
+    
+    @staticmethod
+    def _try_club_api(video_id, session):
+        """Try to get URL using club API."""
+        club_api_url = f"{URLExtractor.HOTMART_CLUB_API}/{video_id}/play"
+        response = session.get(club_api_url, headers=URLExtractor.DEFAULT_HEADERS)
+        if response.status_code == 200:
+            data = response.json()
+            if 'url' in data:
+                print(f"Got URL from club API: {data['url']}")
+                return data['url']
+        return None
+    
+    @staticmethod
+    def _try_embed_api(video_id, session):
+        """Try to get URL using embed API."""
+        embed_api_url = f"https://cf-embed.play.hotmart.com/video/{video_id}/play"
+        headers = URLExtractor.DEFAULT_HEADERS.copy()
+        headers.update({
+            'Referer': f'{URLExtractor.HOTMART_EMBED_BASE}/{video_id}'
+        })
+        
+        response = session.get(embed_api_url, headers=headers)
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                if 'url' in data:
+                    print(f"Got URL from embed API: {data['url']}")
+                    return data['url']
+            except:
+                print("Failed to parse embed API response")
+        return None
+    
+    @staticmethod
+    def _try_extract_from_embed_page(video_id, session):
+        """Try to extract token from embed page and construct URL."""
+        embed_url = f"{URLExtractor.HOTMART_EMBED_BASE}/{video_id}"
+        response = session.get(embed_url, headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
+            'Accept': 'text/html,application/xhtml+xml,application/xml',
+            'Referer': 'https://101karategames.club.hotmart.com/'
+        })
+        
+        if response.status_code == 200:
+            content = response.text
+            if 'hdntl=' in content:
+                print("Found hdntl token in embed page")
+                token_start = content.find('hdntl=')
+                if token_start > 0:
+                    token_end = content.find('"', token_start)
+                    if token_end < 0:
+                        token_end = content.find("'", token_start)
+                    if token_end > 0:
+                        token = content[token_start:token_end]
+                        url = f"{URLExtractor.HOTMART_CDN_BASE}/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
+                        print(f"Constructed URL with token from embed page: {url}")
+                        return url
+        return None

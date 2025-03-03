@@ -3,32 +3,53 @@ import time
 import requests
 import m3u8
 import ffmpeg
-from selenium import webdriver  # Change back to regular selenium
+import argparse
+import re
+from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
-from urllib.parse import urlparse
-import argparse
-from url_extractor import URLExtractor  # Import the URL extractor module
+from url_extractor import URLExtractor
+
 
 class VideoDownloader:
+    """
+    Main class for downloading videos from Hotmart platform.
+    Handles authentication, navigation, URL extraction, and video downloading.
+    """
+    
     def __init__(self, email, password):
+        """
+        Initialize the downloader with user credentials.
+        
+        Args:
+            email (str): User's email for Hotmart login
+            password (str): User's password for Hotmart login
+        """
+        # URLs and credentials
         self.base_url = "https://101karategames.club.hotmart.com"
         self.login_url = "https://101karategames.club.hotmart.com/login"
         self.email = email
         self.password = password
-        self.download_dir = "videos"
-        self.session = requests.Session()  # Create persistent session
         
-        # Create videos directory if it doesn't exist
+        # Setup download directory
+        self.download_dir = "videos"
         if not os.path.exists(self.download_dir):
             os.makedirs(self.download_dir)
         
-        # Initialize Chrome driver
+        # Initialize HTTP session
+        self.session = requests.Session()
+        
+        # Initialize browser
+        self._setup_browser()
+    
+    def _setup_browser(self):
+        """Set up the Chrome browser with appropriate options and cookies."""
         chrome_options = webdriver.ChromeOptions()
         chrome_options.add_argument("--start-maximized")
+        
         self.driver = webdriver.Chrome(
             service=Service(ChromeDriverManager().install()),
             options=chrome_options
@@ -36,24 +57,26 @@ class VideoDownloader:
         
         # Set initial cookies to prevent popups
         self.driver.get(self.base_url)
-        self.driver.add_cookie({
-            'name': 'cookie-policy-accepted',
-            'value': 'true',
-            'domain': '.hotmart.com'
-        })
-        self.driver.add_cookie({
-            'name': 'cookie-policy-preferences',
-            'value': 'true',
-            'domain': '.hotmart.com'
-        })
-        self.driver.add_cookie({
-            'name': 'hotmart-cookie-policy',
-            'value': 'accepted',
-            'domain': '.hotmart.com'
-        })
+        self._set_initial_cookies()
+    
+    def _set_initial_cookies(self):
+        """Set initial cookies to prevent popups and improve user experience."""
+        cookie_settings = [
+            {'name': 'cookie-policy-accepted', 'value': 'true', 'domain': '.hotmart.com'},
+            {'name': 'cookie-policy-preferences', 'value': 'true', 'domain': '.hotmart.com'},
+            {'name': 'hotmart-cookie-policy', 'value': 'accepted', 'domain': '.hotmart.com'}
+        ]
+        
+        for cookie in cookie_settings:
+            self.driver.add_cookie(cookie)
 
     def login(self):
-        """Login to Hotmart platform"""
+        """
+        Login to Hotmart platform and transfer cookies to requests session.
+        
+        Returns:
+            bool: True if login successful, False otherwise
+        """
         try:
             self.driver.get(self.login_url)
             wait = WebDriverWait(self.driver, 20)
@@ -61,21 +84,19 @@ class VideoDownloader:
             # Wait for page to load completely
             time.sleep(5)
             
-            # Wait for and fill email field
+            # Fill login form
             email_field = wait.until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text'], input[type='email']"))
             )
             email_field.clear()
             email_field.send_keys(self.email)
             
-            # Wait for and fill password field
             password_field = wait.until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password']"))
             )
             password_field.clear()
             password_field.send_keys(self.password)
             
-            # Use the specific button selector
             login_button = wait.until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "button.btn-login[data-test='submit']"))
             )
@@ -85,22 +106,31 @@ class VideoDownloader:
             time.sleep(5)
 
             # Transfer cookies from Selenium to requests session
-            for cookie in self.driver.get_cookies():
-                self.session.cookies.set(
-                    name=cookie['name'],
-                    value=cookie['value'],
-                    domain=cookie.get('domain', ''),
-                    path=cookie.get('path', '/')
-                )
+            self._transfer_cookies_to_session()
 
             return True
             
         except Exception as e:
             print(f"Login failed: {str(e)}")
             return False
+    
+    def _transfer_cookies_to_session(self):
+        """Transfer cookies from Selenium to requests session."""
+        for cookie in self.driver.get_cookies():
+            self.session.cookies.set(
+                name=cookie['name'],
+                value=cookie['value'],
+                domain=cookie.get('domain', ''),
+                path=cookie.get('path', '/')
+            )
 
     def get_video_parts(self):
-        """Get all video parts in the current lesson"""
+        """
+        Get all video parts in the current lesson.
+        
+        Returns:
+            list: List of video part elements, or empty list if none found
+        """
         try:
             wait = WebDriverWait(self.driver, 10)
             parts = wait.until(
@@ -133,24 +163,33 @@ class VideoDownloader:
             return None
 
     def extract_video_url(self, lesson_url):
-        """Extract video URL(s) from lesson page"""
+        """
+        Extract video URL(s) from lesson page.
+        
+        Args:
+            lesson_url (str): URL of the lesson page
+            
+        Returns:
+            list: List of tuples (part_suffix, video_url)
+        """
         try:
             print(f"\nNavigating to lesson page: {lesson_url}")
             self.driver.get(lesson_url)
             time.sleep(8)  # Increased wait time for page to fully load
             
             video_urls = []
-            wait = WebDriverWait(self.driver, 15)  # Increased wait time
+            wait = WebDriverWait(self.driver, 15)
             
-            # Find the iframe (KEEP THIS WORKING CODE!)
+            # Find the iframe
             print("Looking for video iframe...")
             iframe = wait.until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='cf-embed.play.hotmart.com']"))
             )
             
-            # Extract video ID from iframe src (KEEP THIS WORKING CODE!)
+            # Extract video ID and JWT token from iframe src
             iframe_src = iframe.get_attribute('src')
             print(f"Found iframe with src: {iframe_src}")
+            
             video_id = URLExtractor.extract_video_id_from_iframe(iframe_src)
             print(f"Found video ID: {video_id}")
             
@@ -158,213 +197,269 @@ class VideoDownloader:
                 print("Failed to extract video ID from iframe src")
                 return []
             
-            # Try to get the auth token from the iframe src
-            auth_token = None
-            jwt_token = None
-            if 'jwtToken=' in iframe_src:
-                print("Found JWT token in iframe src, might help with authentication")
-                jwt_token = iframe_src.split('jwtToken=')[1].split('&')[0]
-                
-                # Try to use the JWT token to get a direct URL
-                print("Trying to use JWT token to get a direct URL...")
-                
-                # First, try to get the video directly using the JWT token as authentication
-                direct_jwt_url = f"https://cf-embed.play.hotmart.com/video/{video_id}/play?jwt={jwt_token}"
-                response = self.session.get(direct_jwt_url, headers={
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
-                    'Accept': 'application/json',
-                    'Origin': 'https://cf-embed.play.hotmart.com',
-                    'Referer': iframe_src
-                })
-                
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                        if 'url' in data:
-                            print(f"Successfully retrieved URL using JWT token: {data['url']}")
-                            video_urls.append(("", data['url']))
-                            return video_urls
-                    except:
-                        pass
-                
-                # If direct API call fails, try to load the embed page with the JWT token
-                print("Direct API call failed. Trying to load embed page with JWT token...")
-                embed_url = f"https://cf-embed.play.hotmart.com/embed/{video_id}?jwt={jwt_token}"
-                
-                # First, load the embed page in the browser to capture network requests
-                print(f"Loading embed page in browser: {embed_url}")
-                self.driver.get(embed_url)
-                time.sleep(5)  # Wait for page to load
-                
-                # Execute JavaScript to get all network requests
-                script = """
-                var performance = window.performance || window.mozPerformance || window.msPerformance || window.webkitPerformance || {};
-                var network = performance.getEntries() || [];
-                return network.filter(function(entry) {
-                    return entry.name.indexOf('vod-akm.play.hotmart.com') !== -1;
-                }).map(function(entry) {
-                    return entry.name;
-                });
-                """
-                
-                network_requests = self.driver.execute_script(script)
-                print(f"Found {len(network_requests)} network requests to Hotmart CDN")
-                
-                # Look for m3u8 URLs with hdntl token
-                for request in network_requests:
-                    print(f"Network request: {request}")
-                    if 'hdntl=' in request and '.m3u8' in request:
-                        print(f"Found m3u8 URL with hdntl token: {request}")
-                        video_urls.append(("", request))
-                        return video_urls
-                
-                # If we didn't find a direct m3u8 URL, look for any URL with hdntl token
-                for request in network_requests:
-                    if 'hdntl=' in request:
-                        print(f"Found URL with hdntl token: {request}")
-                        # Extract the hdntl token
-                        import re
-                        hdntl_pattern = r'hdntl=exp=[0-9]+~acl=\/\*~data=hdntl~hmac=[a-f0-9]+'
-                        matches = re.findall(hdntl_pattern, request)
-                        
-                        if matches:
-                            token = matches[0]
-                            direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
-                            print(f"Constructed URL with token from network request: {direct_url}")
-                            video_urls.append(("", direct_url))
-                            return video_urls
+            # Extract JWT token if present
+            jwt_token = self._extract_jwt_token(iframe_src)
             
-            # If JWT token approach fails, try API method
-            print("Trying API method to get video URL...")
-            api_url = self.get_video_url_from_api(video_id, jwt_token)
-            if api_url:
-                print(f"Using API URL: {api_url}")
-                video_urls.append(("", api_url))
+            # Try different methods to get the video URL
+            video_urls = self._try_jwt_token_approach(video_id, jwt_token)
+            if video_urls:
                 return video_urls
-            
-            # If API method fails, try the JavaScript extraction method
-            print("API method failed. Switching to iframe for JavaScript extraction...")
-            
-            # Navigate back to the lesson page
-            self.driver.get(lesson_url)
-            time.sleep(5)
-            
-            # Find the iframe again
-            iframe = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='cf-embed.play.hotmart.com']"))
-            )
-            
-            self.driver.switch_to.frame(iframe)
-            
-            # Use the extraction script from the URLExtractor module
-            print("Executing URL extraction script...")
-            script = URLExtractor.get_extraction_script()
-            
-            # Execute script and wait for URL
-            result = self.driver.execute_script(script)
-            
-            # Add JWT token to the result if we have it
-            if jwt_token and isinstance(result, dict) and 'jwtToken' not in result:
-                result['jwtToken'] = jwt_token
-                print(f"Added JWT token to extraction result")
-            
-            print("Processing extraction results...")
-            # Process the result using the URLExtractor, passing the session for API fallback
-            video_urls = URLExtractor.process_extraction_result(result, self.session)
-            
-            # Switch back to main frame
-            self.driver.switch_to.default_content()
-            
-            if not video_urls:
-                print("No video URLs found using standard methods. Trying direct embed page approach...")
-                # Try to get the URL directly from the embed page
-                embed_url = f"https://cf-embed.play.hotmart.com/embed/{video_id}"
-                if jwt_token:
-                    embed_url += f"?jwt={jwt_token}"
-                print(f"Fetching embed page: {embed_url}")
                 
-                response = self.session.get(embed_url, headers={
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml',
-                    'Referer': lesson_url
-                })
+            video_urls = self._try_api_approach(video_id, jwt_token)
+            if video_urls:
+                return video_urls
                 
-                if response.status_code == 200:
-                    content = response.text
-                    
-                    # Try to find hdntl token with regex pattern matching the format in examples
-                    import re
-                    hdntl_pattern = r'hdntl=exp=[0-9]+~acl=\/\*~data=hdntl~hmac=[a-f0-9]+'
-                    matches = re.findall(hdntl_pattern, content)
-                    
-                    if matches:
-                        token = matches[0]
-                        print(f"Found hdntl token with regex: {token}")
-                        direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
-                        print(f"Constructed URL with token from regex: {direct_url}")
-                        video_urls.append(("", direct_url))
-                    elif 'hdntl=' in content:
-                        print("Found hdntl token in embed page")
-                        token_start = content.find('hdntl=')
-                        if token_start > 0:
-                            token_end = content.find('"', token_start)
-                            if token_end < 0:
-                                token_end = content.find("'", token_start)
-                            if token_end > 0:
-                                token = content[token_start:token_end]
-                                direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
-                                print(f"Constructed URL with token from embed page: {direct_url}")
-                                video_urls.append(("", direct_url))
-            
-            # If we still don't have a URL, try one more approach - use the network tab
-            if not video_urls:
-                print("Still no URL found. Trying to extract from network requests...")
+            video_urls = self._try_javascript_extraction(lesson_url, video_id, jwt_token)
+            if video_urls:
+                return video_urls
                 
-                # Navigate to the embed page directly
-                embed_url = f"https://cf-embed.play.hotmart.com/embed/{video_id}"
-                if jwt_token:
-                    embed_url += f"?jwt={jwt_token}"
-                print(f"Loading embed page in browser: {embed_url}")
+            video_urls = self._try_direct_embed_approach(video_id, jwt_token, lesson_url)
+            if video_urls:
+                return video_urls
                 
-                self.driver.get(embed_url)
-                time.sleep(5)  # Wait for page to load
+            video_urls = self._try_network_requests_approach(video_id, jwt_token)
+            if video_urls:
+                return video_urls
                 
-                # Execute JavaScript to get network requests
-                script = """
-                var performance = window.performance || window.mozPerformance || window.msPerformance || window.webkitPerformance || {};
-                var network = performance.getEntries() || [];
-                return network.filter(function(entry) {
-                    return entry.name.indexOf('hdntl=') !== -1;
-                }).map(function(entry) {
-                    return entry.name;
-                });
-                """
-                
-                network_requests = self.driver.execute_script(script)
-                for request in network_requests:
-                    if 'hdntl=' in request:
-                        print(f"Found request with hdntl token: {request}")
-                        # Extract the token
-                        import re
-                        hdntl_pattern = r'hdntl=exp=[0-9]+~acl=\/\*~data=hdntl~hmac=[a-f0-9]+'
-                        matches = re.findall(hdntl_pattern, request)
-                        
-                        if matches:
-                            token = matches[0]
-                            direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
-                            print(f"Constructed URL with token from network request: {direct_url}")
-                            video_urls.append(("", direct_url))
-                            break
-            
-            return video_urls
+            return []
                 
         except Exception as e:
             error_msg = str(e).split('\n')[0] if str(e) else "Unknown error"
             print(f"Failed to load lesson page: {error_msg}")
             return []
+    
+    def _extract_jwt_token(self, iframe_src):
+        """Extract JWT token from iframe src if present."""
+        jwt_token = None
+        if 'jwtToken=' in iframe_src:
+            print("Found JWT token in iframe src, might help with authentication")
+            jwt_token = iframe_src.split('jwtToken=')[1].split('&')[0]
+        return jwt_token
+    
+    def _try_jwt_token_approach(self, video_id, jwt_token):
+        """Try to get video URL using JWT token."""
+        if not jwt_token:
+            return []
+            
+        video_urls = []
+        
+        # Try to get the video directly using the JWT token as authentication
+        print("Trying to use JWT token to get a direct URL...")
+        direct_jwt_url = f"https://cf-embed.play.hotmart.com/video/{video_id}/play?jwt={jwt_token}"
+        response = self.session.get(direct_jwt_url, headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
+            'Accept': 'application/json',
+            'Origin': 'https://cf-embed.play.hotmart.com',
+            'Referer': f'https://cf-embed.play.hotmart.com/embed/{video_id}'
+        })
+        
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                if 'url' in data:
+                    print(f"Successfully retrieved URL using JWT token: {data['url']}")
+                    video_urls.append(("", data['url']))
+                    return video_urls
+            except:
+                pass
+        
+        # If direct API call fails, try to load the embed page with the JWT token
+        print("Direct API call failed. Trying to load embed page with JWT token...")
+        embed_url = f"https://cf-embed.play.hotmart.com/embed/{video_id}?jwt={jwt_token}"
+        
+        # Load the embed page in the browser to capture network requests
+        print(f"Loading embed page in browser: {embed_url}")
+        self.driver.get(embed_url)
+        time.sleep(5)  # Wait for page to load
+        
+        # Execute JavaScript to get all network requests
+        script = """
+        var performance = window.performance || window.mozPerformance || window.msPerformance || window.webkitPerformance || {};
+        var network = performance.getEntries() || [];
+        return network.filter(function(entry) {
+            return entry.name.indexOf('vod-akm.play.hotmart.com') !== -1;
+        }).map(function(entry) {
+            return entry.name;
+        });
+        """
+        
+        network_requests = self.driver.execute_script(script)
+        print(f"Found {len(network_requests)} network requests to Hotmart CDN")
+        
+        # Look for m3u8 URLs with hdntl token
+        for request in network_requests:
+            print(f"Network request: {request}")
+            if 'hdntl=' in request and '.m3u8' in request:
+                print(f"Found m3u8 URL with hdntl token: {request}")
+                video_urls.append(("", request))
+                return video_urls
+        
+        # If we didn't find a direct m3u8 URL, look for any URL with hdntl token
+        for request in network_requests:
+            if 'hdntl=' in request:
+                print(f"Found URL with hdntl token: {request}")
+                # Extract the hdntl token
+                hdntl_pattern = r'hdntl=exp=[0-9]+~acl=\/\*~data=hdntl~hmac=[a-f0-9]+'
+                matches = re.findall(hdntl_pattern, request)
+                
+                if matches:
+                    token = matches[0]
+                    direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
+                    print(f"Constructed URL with token from network request: {direct_url}")
+                    video_urls.append(("", direct_url))
+                    return video_urls
+        
+        return []
+    
+    def _try_api_approach(self, video_id, jwt_token):
+        """Try to get video URL using API methods."""
+        print("Trying API method to get video URL...")
+        api_url = self.get_video_url_from_api(video_id, jwt_token)
+        if api_url:
+            print(f"Using API URL: {api_url}")
+            return [("", api_url)]
+        return []
+    
+    def _try_javascript_extraction(self, lesson_url, video_id, jwt_token):
+        """Try to extract video URL using JavaScript injection."""
+        print("API method failed. Switching to iframe for JavaScript extraction...")
+        
+        # Navigate back to the lesson page
+        self.driver.get(lesson_url)
+        time.sleep(5)
+        
+        # Find the iframe again
+        wait = WebDriverWait(self.driver, 15)
+        iframe = wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='cf-embed.play.hotmart.com']"))
+        )
+        
+        self.driver.switch_to.frame(iframe)
+        
+        # Use the extraction script from the URLExtractor module
+        print("Executing URL extraction script...")
+        script = URLExtractor.get_extraction_script()
+        
+        # Execute script and wait for URL
+        result = self.driver.execute_script(script)
+        
+        # Add JWT token to the result if we have it
+        if jwt_token and isinstance(result, dict) and 'jwtToken' not in result:
+            result['jwtToken'] = jwt_token
+            print(f"Added JWT token to extraction result")
+        
+        print("Processing extraction results...")
+        # Process the result using the URLExtractor, passing the session for API fallback
+        video_urls = URLExtractor.process_extraction_result(result, self.session)
+        
+        # Switch back to main frame
+        self.driver.switch_to.default_content()
+        
+        return video_urls
+    
+    def _try_direct_embed_approach(self, video_id, jwt_token, lesson_url):
+        """Try to get video URL directly from the embed page."""
+        print("No video URLs found using standard methods. Trying direct embed page approach...")
+        
+        # Try to get the URL directly from the embed page
+        embed_url = f"https://cf-embed.play.hotmart.com/embed/{video_id}"
+        if jwt_token:
+            embed_url += f"?jwt={jwt_token}"
+        print(f"Fetching embed page: {embed_url}")
+        
+        response = self.session.get(embed_url, headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
+            'Accept': 'text/html,application/xhtml+xml,application/xml',
+            'Referer': lesson_url
+        })
+        
+        if response.status_code != 200:
+            return []
+            
+        content = response.text
+        video_urls = []
+        
+        # Try to find hdntl token with regex pattern matching the format in examples
+        hdntl_pattern = r'hdntl=exp=[0-9]+~acl=\/\*~data=hdntl~hmac=[a-f0-9]+'
+        matches = re.findall(hdntl_pattern, content)
+        
+        if matches:
+            token = matches[0]
+            print(f"Found hdntl token with regex: {token}")
+            direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
+            print(f"Constructed URL with token from regex: {direct_url}")
+            video_urls.append(("", direct_url))
+            return video_urls
+        elif 'hdntl=' in content:
+            print("Found hdntl token in embed page")
+            token_start = content.find('hdntl=')
+            if token_start > 0:
+                token_end = content.find('"', token_start)
+                if token_end < 0:
+                    token_end = content.find("'", token_start)
+                if token_end > 0:
+                    token = content[token_start:token_end]
+                    direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
+                    print(f"Constructed URL with token from embed page: {direct_url}")
+                    video_urls.append(("", direct_url))
+                    return video_urls
+        
+        return []
+    
+    def _try_network_requests_approach(self, video_id, jwt_token):
+        """Try to extract video URL from network requests."""
+        print("Still no URL found. Trying to extract from network requests...")
+        
+        # Navigate to the embed page directly
+        embed_url = f"https://cf-embed.play.hotmart.com/embed/{video_id}"
+        if jwt_token:
+            embed_url += f"?jwt={jwt_token}"
+        print(f"Loading embed page in browser: {embed_url}")
+        
+        self.driver.get(embed_url)
+        time.sleep(5)  # Wait for page to load
+        
+        # Execute JavaScript to get network requests
+        script = """
+        var performance = window.performance || window.mozPerformance || window.msPerformance || window.webkitPerformance || {};
+        var network = performance.getEntries() || [];
+        return network.filter(function(entry) {
+            return entry.name.indexOf('hdntl=') !== -1;
+        }).map(function(entry) {
+            return entry.name;
+        });
+        """
+        
+        network_requests = self.driver.execute_script(script)
+        video_urls = []
+        
+        for request in network_requests:
+            if 'hdntl=' in request:
+                print(f"Found request with hdntl token: {request}")
+                # Extract the token
+                hdntl_pattern = r'hdntl=exp=[0-9]+~acl=\/\*~data=hdntl~hmac=[a-f0-9]+'
+                matches = re.findall(hdntl_pattern, request)
+                
+                if matches:
+                    token = matches[0]
+                    direct_url = f"https://vod-akm.play.hotmart.com/video/{video_id}/hls/{video_id}-audio=2756-video=2292536.m3u8?{token}"
+                    print(f"Constructed URL with token from network request: {direct_url}")
+                    video_urls.append(("", direct_url))
+                    return video_urls
+        
+        return []
 
     def download_video(self, video_url, filename):
-        """Download video from URL"""
+        """
+        Download video from URL.
+        
+        Args:
+            video_url (str): URL of the video to download
+            filename (str): Filename to save the video as
+            
+        Returns:
+            bool: True if download successful, False otherwise
+        """
         try:
             # Check if video is HLS stream
             if video_url.endswith('.m3u8'):
@@ -378,7 +473,13 @@ class VideoDownloader:
             return False
 
     def _download_mp4(self, video_url, filename):
-        """Download direct MP4 video"""
+        """
+        Download direct MP4 video.
+        
+        Args:
+            video_url (str): URL of the MP4 video
+            filename (str): Filename to save the video as
+        """
         response = requests.get(video_url, stream=True)
         total_size = int(response.headers.get('content-length', 0))
         
@@ -390,7 +491,16 @@ class VideoDownloader:
                 file.write(data)
 
     def _download_hls(self, video_url, filename):
-        """Download and convert HLS stream"""
+        """
+        Download and convert HLS stream.
+        
+        Args:
+            video_url (str): URL of the HLS stream
+            filename (str): Filename to save the video as
+            
+        Raises:
+            Exception: If download fails
+        """
         try:
             print(f"Downloading HLS stream: {video_url}")
             
@@ -415,63 +525,83 @@ class VideoDownloader:
             playlist = m3u8.loads(playlist_response.text)
             output_path = os.path.join(self.download_dir, f"{filename}.mp4")
             
-            # Get cookies from session as string
-            cookie_header = '; '.join([f"{c.name}={c.value}" for c in self.session.cookies])
+            # Extract auth token and cookies for ffmpeg
+            headers_arg = self._prepare_ffmpeg_headers(video_url)
             
-            # Extract auth token from URL if present
-            auth_header = ""
-            if 'hdntl=' in video_url:
-                auth_token = video_url.split('hdntl=')[1]
-                auth_header = f"'hdntl: {auth_token}'"
-            elif 'hdnts=' in video_url:
-                auth_token = video_url.split('hdnts=')[1]
-                auth_header = f"'hdnts: {auth_token}'"
-            
-            # Use ffmpeg with headers including cookies and auth token
-            print(f"Starting ffmpeg download to {output_path}...")
-            headers_arg = f"'Origin: https://cf-embed.play.hotmart.com' 'Referer: https://cf-embed.play.hotmart.com/' 'Cookie: {cookie_header}' {auth_header}"
-            
+            # Try primary ffmpeg method
             try:
-                stream = ffmpeg.input(
-                    video_url,
-                    headers=headers_arg
-                )
-                stream = ffmpeg.output(stream, output_path)
-                ffmpeg.run(stream, overwrite_output=True)
-                print(f"Download completed: {output_path}")
-                return True
+                self._download_with_ffmpeg_python(video_url, output_path, headers_arg)
             except Exception as e:
-                print(f"ffmpeg failed: {str(e)}")
-                
-                # Try alternative method with direct system call to ffmpeg
-                print("Trying alternative download method...")
-                cmd = [
-                    'ffmpeg', '-y',
-                    '-headers', f"Origin: https://cf-embed.play.hotmart.com\r\nReferer: https://cf-embed.play.hotmart.com/\r\nCookie: {cookie_header}",
-                    '-i', video_url,
-                    '-c', 'copy',
-                    output_path
-                ]
-                
-                import subprocess
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode != 0:
-                    print(f"Alternative method failed: {result.stderr}")
-                    raise Exception(f"Alternative download method failed: {result.returncode}")
-                
-                print(f"Alternative download completed: {output_path}")
-                return True
+                print(f"Primary ffmpeg method failed: {str(e)}")
+                self._download_with_ffmpeg_subprocess(video_url, output_path)
             
         except Exception as e:
             print(f"HLS download failed: {str(e)}")
             raise
+    
+    def _prepare_ffmpeg_headers(self, video_url):
+        """Prepare headers for ffmpeg including cookies and auth token."""
+        # Get cookies from session as string
+        cookie_header = '; '.join([f"{c.name}={c.value}" for c in self.session.cookies])
+        
+        # Extract auth token from URL if present
+        auth_header = ""
+        if 'hdntl=' in video_url:
+            auth_token = video_url.split('hdntl=')[1]
+            if '&' in auth_token:
+                auth_token = auth_token.split('&')[0]
+            auth_header = f"'hdntl: {auth_token}'"
+        elif 'hdnts=' in video_url:
+            auth_token = video_url.split('hdnts=')[1]
+            if '&' in auth_token:
+                auth_token = auth_token.split('&')[0]
+            auth_header = f"'hdnts: {auth_token}'"
+        
+        return f"'Origin: https://cf-embed.play.hotmart.com' 'Referer: https://cf-embed.play.hotmart.com/' 'Cookie: {cookie_header}' {auth_header}"
+    
+    def _download_with_ffmpeg_python(self, video_url, output_path, headers_arg):
+        """Download video using ffmpeg-python library."""
+        print(f"Starting ffmpeg download to {output_path}...")
+        stream = ffmpeg.input(
+            video_url,
+            headers=headers_arg
+        )
+        stream = ffmpeg.output(stream, output_path)
+        ffmpeg.run(stream, overwrite_output=True)
+        print(f"Download completed: {output_path}")
+    
+    def _download_with_ffmpeg_subprocess(self, video_url, output_path):
+        """Download video using direct ffmpeg subprocess call as fallback."""
+        print("Trying alternative download method with subprocess...")
+        cookie_header = '; '.join([f"{c.name}={c.value}" for c in self.session.cookies])
+        
+        cmd = [
+            'ffmpeg', '-y',
+            '-headers', f"Origin: https://cf-embed.play.hotmart.com\r\nReferer: https://cf-embed.play.hotmart.com/\r\nCookie: {cookie_header}",
+            '-i', video_url,
+            '-c', 'copy',
+            output_path
+        ]
+        
+        import subprocess
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"Alternative method failed: {result.stderr}")
+            raise Exception(f"Alternative download method failed: {result.returncode}")
+        
+        print(f"Alternative download completed: {output_path}")
 
     def close(self):
-        """Close the browser"""
+        """Close the browser."""
         self.driver.quit()
 
     def get_lesson_title(self):
-        """Extract lesson title from page"""
+        """
+        Extract lesson title from page.
+        
+        Returns:
+            str: Cleaned lesson title, or "lesson" if not found
+        """
         try:
             title_element = WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "h1, .lesson-title"))
@@ -485,7 +615,12 @@ class VideoDownloader:
             return "lesson"
 
     def get_all_lessons(self):
-        """Get all lesson hashes and titles from the navigation menu"""
+        """
+        Get all lesson hashes and titles from the navigation menu.
+        
+        Returns:
+            list: List of dictionaries with lesson hash and title
+        """
         try:
             # Wait for the lesson navigation to load
             wait = WebDriverWait(self.driver, 10)
@@ -505,7 +640,7 @@ class VideoDownloader:
             return []
 
     def download_all_lessons(self):
-        """Download videos from all lessons"""
+        """Download videos from all lessons."""
         lessons = self.get_all_lessons()
         
         for i, lesson in enumerate(lessons, 1):
@@ -535,7 +670,9 @@ class VideoDownloader:
                 print(f"Error processing lesson {lesson['title']}: {str(e)}")
                 continue
 
+
 def main():
+    """Main entry point for the script."""
     parser = argparse.ArgumentParser(description='Download videos from 101 Karate Games')
     parser.add_argument('--email', help='Your Hotmart email/username', required=True)
     parser.add_argument('--password', help='Your Hotmart password', required=True)
@@ -552,6 +689,7 @@ def main():
             
     finally:
         downloader.close()
+
 
 if __name__ == "__main__":
     main() 
