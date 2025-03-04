@@ -528,13 +528,16 @@ class VideoDownloader:
             bool: True if download successful, False otherwise
         """
         try:
-            # Check if video is HLS stream
-            if video_url.endswith('.m3u8'):
+            # Better detection of video type
+            if '.m3u8' in video_url or '/hls/' in video_url:
                 log.info(f"Detected HLS stream format for {filename}")
                 self._download_hls(video_url, filename)
-            else:
+            elif '.mp4' in video_url:
                 log.info(f"Detected MP4 format for {filename}")
                 self._download_mp4(video_url, filename)
+            else:
+                log.info(f"Unknown format, defaulting to HLS for {filename}")
+                self._download_hls(video_url, filename)
             return True
 
         except Exception as e:
@@ -561,9 +564,17 @@ class VideoDownloader:
         # Check if this URL contains an authorization token
         log.debug(f"Downloading MP4 using authenticated session: {video_url[:100]}...")
         
-        # Extract and add hdntl/hdnts token to header if present in URL
+        # Extract and add hdntl/hdnts token to header while preserving app parameter
         token = None
         clean_url = video_url
+        app_param = None
+        
+        # First extract the app parameter if it exists
+        if '&app=' in video_url:
+            app_param = video_url.split('&app=')[1]
+            if '&' in app_param:
+                app_param = app_param.split('&')[0]
+            log.debug(f"Found app parameter: {app_param}")
         
         if 'hdntl=' in video_url:
             # Split the URL around the hdntl parameter
@@ -574,17 +585,28 @@ class VideoDownloader:
             token_part = url_parts[1]
             if '&' in token_part:
                 token = token_part.split('&')[0]
-                # Keep remaining parameters
-                remaining_params = token_part.split('&', 1)[1]
+                # Keep remaining parameters except app (we'll add it back explicitly)
+                remaining_params_parts = []
+                for param in token_part.split('&', 1)[1].split('&'):
+                    if not param.startswith('app='):
+                        remaining_params_parts.append(param)
+                
+                remaining_params = '&'.join(remaining_params_parts)
                 clean_url = f"{base_url}?{remaining_params}" if remaining_params else base_url
             else:
                 token = token_part
                 clean_url = base_url
+            
+            # Make sure to add app param back if it exists
+            if app_param and '?' in clean_url:
+                clean_url += f"&app={app_param}"
+            elif app_param:
+                clean_url += f"?app={app_param}"
                 
             # Add token to headers
             headers['hdntl'] = token
             log.debug(f"Added hdntl token to headers: {token[:30]}...")
-            log.debug(f"Using clean URL without token in query: {clean_url[:100]}...")
+            log.debug(f"Using clean URL: {clean_url[:100]}...")
             
         elif 'hdnts=' in video_url:
             # Split the URL around the hdnts parameter
@@ -595,17 +617,28 @@ class VideoDownloader:
             token_part = url_parts[1]
             if '&' in token_part:
                 token = token_part.split('&')[0]
-                # Keep remaining parameters
-                remaining_params = token_part.split('&', 1)[1]
+                # Keep remaining parameters except app (we'll add it back explicitly)
+                remaining_params_parts = []
+                for param in token_part.split('&', 1)[1].split('&'):
+                    if not param.startswith('app='):
+                        remaining_params_parts.append(param)
+                
+                remaining_params = '&'.join(remaining_params_parts)
                 clean_url = f"{base_url}?{remaining_params}" if remaining_params else base_url
             else:
                 token = token_part
                 clean_url = base_url
+            
+            # Make sure to add app param back if it exists
+            if app_param and '?' in clean_url:
+                clean_url += f"&app={app_param}"
+            elif app_param:
+                clean_url += f"?app={app_param}"
                 
             # Add token to headers
             headers['hdnts'] = token
             log.debug(f"Added hdnts token to headers: {token[:30]}...")
-            log.debug(f"Using clean URL without token in query: {clean_url[:100]}...")
+            log.debug(f"Using clean URL: {clean_url[:100]}...")
         
         # Add additional Akamai-specific headers that might help
         headers['Access-Control-Request-Headers'] = 'hdntl,hdnts'
@@ -657,9 +690,17 @@ class VideoDownloader:
                 'Accept-Language': 'en-US,en;q=0.5',
             }
             
-            # Extract and add hdntl/hdnts token to header if present in URL
+            # Extract and add hdntl/hdnts token to header while preserving app parameter
             token = None
             clean_url = video_url
+            app_param = None
+            
+            # First extract the app parameter if it exists
+            if '&app=' in video_url:
+                app_param = video_url.split('&app=')[1]
+                if '&' in app_param:
+                    app_param = app_param.split('&')[0]
+                log.debug(f"Found app parameter: {app_param}")
             
             if 'hdntl=' in video_url:
                 # Split the URL around the hdntl parameter
@@ -670,17 +711,28 @@ class VideoDownloader:
                 token_part = url_parts[1]
                 if '&' in token_part:
                     token = token_part.split('&')[0]
-                    # Keep remaining parameters
-                    remaining_params = token_part.split('&', 1)[1]
+                    # Keep remaining parameters except app (we'll add it back explicitly)
+                    remaining_params_parts = []
+                    for param in token_part.split('&', 1)[1].split('&'):
+                        if not param.startswith('app='):
+                            remaining_params_parts.append(param)
+                    
+                    remaining_params = '&'.join(remaining_params_parts)
                     clean_url = f"{base_url}?{remaining_params}" if remaining_params else base_url
                 else:
                     token = token_part
                     clean_url = base_url
+                
+                # Make sure to add app param back if it exists
+                if app_param and '?' in clean_url:
+                    clean_url += f"&app={app_param}"
+                elif app_param:
+                    clean_url += f"?app={app_param}"
                     
                 # Add token to headers
                 headers['hdntl'] = token
                 log.debug(f"Added hdntl token to headers: {token[:30]}...")
-                log.debug(f"Using clean URL without token in query: {clean_url[:100]}...")
+                log.debug(f"Using clean URL: {clean_url[:100]}...")
                 
             elif 'hdnts=' in video_url:
                 # Split the URL around the hdnts parameter
@@ -691,17 +743,28 @@ class VideoDownloader:
                 token_part = url_parts[1]
                 if '&' in token_part:
                     token = token_part.split('&')[0]
-                    # Keep remaining parameters
-                    remaining_params = token_part.split('&', 1)[1]
+                    # Keep remaining parameters except app (we'll add it back explicitly)
+                    remaining_params_parts = []
+                    for param in token_part.split('&', 1)[1].split('&'):
+                        if not param.startswith('app='):
+                            remaining_params_parts.append(param)
+                    
+                    remaining_params = '&'.join(remaining_params_parts)
                     clean_url = f"{base_url}?{remaining_params}" if remaining_params else base_url
                 else:
                     token = token_part
                     clean_url = base_url
+                
+                # Make sure to add app param back if it exists
+                if app_param and '?' in clean_url:
+                    clean_url += f"&app={app_param}"
+                elif app_param:
+                    clean_url += f"?app={app_param}"
                     
                 # Add token to headers
                 headers['hdnts'] = token
                 log.debug(f"Added hdnts token to headers: {token[:30]}...")
-                log.debug(f"Using clean URL without token in query: {clean_url[:100]}...")
+                log.debug(f"Using clean URL: {clean_url[:100]}...")
             
             # Add additional Akamai-specific headers that might help
             headers['Access-Control-Request-Headers'] = 'hdntl,hdnts'
@@ -743,8 +806,16 @@ class VideoDownloader:
         # Get cookies from session as string
         cookie_header = '; '.join([f"{c.name}={c.value}" for c in self.session.cookies])
 
-        # Extract auth token from URL if present
+        # Extract auth token and app parameter from URL if present
         auth_headers = []
+        app_param = None
+        
+        # Extract app param if present
+        if '&app=' in video_url:
+            app_param = video_url.split('&app=')[1]
+            if '&' in app_param:
+                app_param = app_param.split('&')[0]
+            log.debug(f"Found app parameter for ffmpeg: {app_param}")
         
         # Add standard headers
         auth_headers.append("'Origin: https://cf-embed.play.hotmart.com'")
@@ -753,6 +824,10 @@ class VideoDownloader:
         auth_headers.append("'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0'")
         auth_headers.append("'Accept: */*'")
         auth_headers.append("'Accept-Language: en-US,en;q=0.5'")
+        
+        # Add app parameter header if present
+        if app_param:
+            auth_headers.append(f"'X-App-Id: {app_param}'")
         
         # Add Akamai-specific auth tokens if present in URL
         if 'hdntl=' in video_url:
@@ -768,9 +843,14 @@ class VideoDownloader:
                 auth_token = auth_token.split('&')[0]
             auth_headers.append(f"'hdnts: {auth_token}'")
             log.debug(f"Added hdnts token to ffmpeg headers: {auth_token[:30]}...")
-            
+        
+        # Add Access-Control-Request headers
+        auth_headers.append("'Access-Control-Request-Headers: origin,range,hdntl,hdnts'")
+        
         # Combine all headers
-        return ' '.join(auth_headers)
+        header_string = ' '.join(auth_headers)
+        log.debug(f"FFmpeg headers prepared: {len(header_string)} chars total")
+        return header_string
 
     def _download_with_ffmpeg_python(self, video_url, output_path, headers_arg):
         """Download video using ffmpeg-python library."""
