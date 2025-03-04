@@ -81,14 +81,21 @@ def extract_auth_token(content):
     # Fallback to simpler extraction
     if 'hdntl=' in content:
         token_start = content.find('hdntl=')
-        if token_start > 0:
-            token_end = content.find('"', token_start)
-            if token_end < 0:
-                token_end = content.find("'", token_start)
-            if token_end < 0:
-                token_end = content.find('&', token_start)
+        if token_start >= 0:
+            # Look for common delimiters after the token
+            delimiters = ['"', "'", '&', ' ']
+            token_end = -1
+            
+            for delimiter in delimiters:
+                end_pos = content.find(delimiter, token_start + 6)  # +6 to skip "hdntl="
+                if end_pos > 0:
+                    # Found a delimiter, check if it's the earliest one
+                    if token_end == -1 or end_pos < token_end:
+                        token_end = end_pos
+            
             if token_end > 0:
                 return content[token_start:token_end]
+            
             # If we can't find a delimiter, return the rest of the string
             return content[token_start:]
 
