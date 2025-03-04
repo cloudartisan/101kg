@@ -1,5 +1,7 @@
 # 101 Karate Games Video Downloader
 
+![Tests](https://github.com/cloudartisan/101kg/workflows/Python%20Tests/badge.svg)
+
 This repository contains Python modules to automate the login, extraction, and download of videos from Hotmart's 101 Karate Games platform.
 
 ## Features
