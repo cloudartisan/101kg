@@ -361,18 +361,23 @@ class TestVideoDownloaderDownload:
         with patch('builtins.open', mock_open()) as mock_file:
             video_downloader._download_mp4("https://example.com/video.mp4", "test_video")
             
-            # Assertions
-            video_downloader._mock_session.get.assert_called_once_with(
-                "https://example.com/video.mp4", 
-                stream=True, 
-                headers={
-                    'Origin': 'https://cf-embed.play.hotmart.com',
-                    'Referer': 'https://cf-embed.play.hotmart.com/',
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
-                    'Accept': '*/*',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                }
-            )
+            # Assertions - We only check that get was called once with the right URL
+            # and stream param since headers now include dynamic fields
+            assert video_downloader._mock_session.get.call_count == 1
+            call_args = video_downloader._mock_session.get.call_args
+            assert call_args[0][0] == "https://example.com/video.mp4"
+            assert call_args[1]['stream'] is True
+            
+            # Validate the basic headers are present (without requiring exact match
+            # which would make the test too brittle)
+            headers = call_args[1]['headers']
+            assert headers['Origin'] == 'https://cf-embed.play.hotmart.com'
+            assert headers['Referer'] == 'https://cf-embed.play.hotmart.com/'
+            assert headers['User-Agent'] == 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0'
+            assert headers['Accept'] == '*/*'
+            assert headers['Accept-Language'] == 'en-US,en;q=0.5'
+            
+            # Validate file operations
             mock_file.assert_called_once_with(os.path.join("videos", "test_video.mp4"), 'wb')
             mock_file().write.assert_called_once_with(b"test data")
     

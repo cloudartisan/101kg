@@ -558,8 +558,63 @@ class VideoDownloader:
             'Accept-Language': 'en-US,en;q=0.5',
         }
         
+        # Check if this URL contains an authorization token
         log.debug(f"Downloading MP4 using authenticated session: {video_url[:100]}...")
-        response = self.session.get(video_url, stream=True, headers=headers)
+        
+        # Extract and add hdntl/hdnts token to header if present in URL
+        token = None
+        clean_url = video_url
+        
+        if 'hdntl=' in video_url:
+            # Split the URL around the hdntl parameter
+            url_parts = video_url.split('hdntl=')
+            base_url = url_parts[0].rstrip('?&')
+            
+            # Extract token
+            token_part = url_parts[1]
+            if '&' in token_part:
+                token = token_part.split('&')[0]
+                # Keep remaining parameters
+                remaining_params = token_part.split('&', 1)[1]
+                clean_url = f"{base_url}?{remaining_params}" if remaining_params else base_url
+            else:
+                token = token_part
+                clean_url = base_url
+                
+            # Add token to headers
+            headers['hdntl'] = token
+            log.debug(f"Added hdntl token to headers: {token[:30]}...")
+            log.debug(f"Using clean URL without token in query: {clean_url[:100]}...")
+            
+        elif 'hdnts=' in video_url:
+            # Split the URL around the hdnts parameter
+            url_parts = video_url.split('hdnts=')
+            base_url = url_parts[0].rstrip('?&')
+            
+            # Extract token
+            token_part = url_parts[1]
+            if '&' in token_part:
+                token = token_part.split('&')[0]
+                # Keep remaining parameters
+                remaining_params = token_part.split('&', 1)[1]
+                clean_url = f"{base_url}?{remaining_params}" if remaining_params else base_url
+            else:
+                token = token_part
+                clean_url = base_url
+                
+            # Add token to headers
+            headers['hdnts'] = token
+            log.debug(f"Added hdnts token to headers: {token[:30]}...")
+            log.debug(f"Using clean URL without token in query: {clean_url[:100]}...")
+        
+        # Add additional Akamai-specific headers that might help
+        headers['Access-Control-Request-Headers'] = 'hdntl,hdnts'
+        
+        # Log full headers for debugging
+        log.debug(f"Request headers: {headers}")
+        
+        # Use the clean URL without the token in the query string
+        response = self.session.get(clean_url, stream=True, headers=headers)
         
         if response.status_code != 200:
             log.error(f"MP4 download failed with status code: {response.status_code}")
@@ -601,10 +656,62 @@ class VideoDownloader:
                 'Accept': '*/*',
                 'Accept-Language': 'en-US,en;q=0.5',
             }
+            
+            # Extract and add hdntl/hdnts token to header if present in URL
+            token = None
+            clean_url = video_url
+            
+            if 'hdntl=' in video_url:
+                # Split the URL around the hdntl parameter
+                url_parts = video_url.split('hdntl=')
+                base_url = url_parts[0].rstrip('?&')
+                
+                # Extract token
+                token_part = url_parts[1]
+                if '&' in token_part:
+                    token = token_part.split('&')[0]
+                    # Keep remaining parameters
+                    remaining_params = token_part.split('&', 1)[1]
+                    clean_url = f"{base_url}?{remaining_params}" if remaining_params else base_url
+                else:
+                    token = token_part
+                    clean_url = base_url
+                    
+                # Add token to headers
+                headers['hdntl'] = token
+                log.debug(f"Added hdntl token to headers: {token[:30]}...")
+                log.debug(f"Using clean URL without token in query: {clean_url[:100]}...")
+                
+            elif 'hdnts=' in video_url:
+                # Split the URL around the hdnts parameter
+                url_parts = video_url.split('hdnts=')
+                base_url = url_parts[0].rstrip('?&')
+                
+                # Extract token
+                token_part = url_parts[1]
+                if '&' in token_part:
+                    token = token_part.split('&')[0]
+                    # Keep remaining parameters
+                    remaining_params = token_part.split('&', 1)[1]
+                    clean_url = f"{base_url}?{remaining_params}" if remaining_params else base_url
+                else:
+                    token = token_part
+                    clean_url = base_url
+                    
+                # Add token to headers
+                headers['hdnts'] = token
+                log.debug(f"Added hdnts token to headers: {token[:30]}...")
+                log.debug(f"Using clean URL without token in query: {clean_url[:100]}...")
+            
+            # Add additional Akamai-specific headers that might help
+            headers['Access-Control-Request-Headers'] = 'hdntl,hdnts'
+            
+            # Log headers for debugging
+            log.debug(f"HLS request headers: {headers}")
 
-            # Use our session to load the playlist
+            # Use our session to load the playlist with clean URL
             log.debug("Fetching M3U8 playlist")
-            playlist_response = self.session.get(video_url, headers=headers)
+            playlist_response = self.session.get(clean_url, headers=headers)
             if not playlist_response.ok:
                 log.error(f"Failed to load playlist: {playlist_response.status_code}")
                 log.error(f"Response: {playlist_response.text}")
@@ -637,19 +744,33 @@ class VideoDownloader:
         cookie_header = '; '.join([f"{c.name}={c.value}" for c in self.session.cookies])
 
         # Extract auth token from URL if present
-        auth_header = ""
+        auth_headers = []
+        
+        # Add standard headers
+        auth_headers.append("'Origin: https://cf-embed.play.hotmart.com'")
+        auth_headers.append("'Referer: https://cf-embed.play.hotmart.com/'")
+        auth_headers.append(f"'Cookie: {cookie_header}'")
+        auth_headers.append("'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0'")
+        auth_headers.append("'Accept: */*'")
+        auth_headers.append("'Accept-Language: en-US,en;q=0.5'")
+        
+        # Add Akamai-specific auth tokens if present in URL
         if 'hdntl=' in video_url:
             auth_token = video_url.split('hdntl=')[1]
             if '&' in auth_token:
                 auth_token = auth_token.split('&')[0]
-            auth_header = f"'hdntl: {auth_token}'"
+            auth_headers.append(f"'hdntl: {auth_token}'")
+            log.debug(f"Added hdntl token to ffmpeg headers: {auth_token[:30]}...")
+            
         elif 'hdnts=' in video_url:
             auth_token = video_url.split('hdnts=')[1]
             if '&' in auth_token:
                 auth_token = auth_token.split('&')[0]
-            auth_header = f"'hdnts: {auth_token}'"
-
-        return f"'Origin: https://cf-embed.play.hotmart.com' 'Referer: https://cf-embed.play.hotmart.com/' 'Cookie: {cookie_header}' {auth_header}"
+            auth_headers.append(f"'hdnts: {auth_token}'")
+            log.debug(f"Added hdnts token to ffmpeg headers: {auth_token[:30]}...")
+            
+        # Combine all headers
+        return ' '.join(auth_headers)
 
     def _download_with_ffmpeg_python(self, video_url, output_path, headers_arg):
         """Download video using ffmpeg-python library."""
