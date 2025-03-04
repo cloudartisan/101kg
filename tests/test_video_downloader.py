@@ -350,20 +350,45 @@ class TestVideoDownloaderDownload:
     
     def test_download_mp4_success(self, video_downloader):
         """Test successful MP4 download."""
-        # Mock requests response
+        # Mock session response
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.headers.get.return_value = "1000"
         mock_response.iter_content.return_value = [b"test data"]
+        video_downloader._mock_session.get.return_value = mock_response
         
-        # Mock requests.get
-        with patch('requests.get', return_value=mock_response), \
-             patch('builtins.open', mock_open()) as mock_file:
-            
+        # Mock file operations
+        with patch('builtins.open', mock_open()) as mock_file:
             video_downloader._download_mp4("https://example.com/video.mp4", "test_video")
             
             # Assertions
+            video_downloader._mock_session.get.assert_called_once_with(
+                "https://example.com/video.mp4", 
+                stream=True, 
+                headers={
+                    'Origin': 'https://cf-embed.play.hotmart.com',
+                    'Referer': 'https://cf-embed.play.hotmart.com/',
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                }
+            )
             mock_file.assert_called_once_with(os.path.join("videos", "test_video.mp4"), 'wb')
             mock_file().write.assert_called_once_with(b"test data")
+    
+    def test_download_mp4_failure(self, video_downloader):
+        """Test MP4 download failure handling."""
+        # Mock session response for failure
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.headers = {'Content-Type': 'application/json'}
+        video_downloader._mock_session.get.return_value = mock_response
+        
+        # Test exception is raised
+        with pytest.raises(Exception) as excinfo:
+            video_downloader._download_mp4("https://example.com/video.mp4", "test_video")
+        
+        assert "MP4 download failed: HTTP 401" in str(excinfo.value)
 
 
 class TestVideoDownloaderHlsDownload:

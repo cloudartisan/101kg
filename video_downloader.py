@@ -549,8 +549,25 @@ class VideoDownloader:
             video_url (str): URL of the MP4 video
             filename (str): Filename to save the video as
         """
-        response = requests.get(video_url, stream=True)
+        # Use authenticated session instead of direct requests
+        headers = {
+            'Origin': 'https://cf-embed.play.hotmart.com',
+            'Referer': 'https://cf-embed.play.hotmart.com/',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.5',
+        }
+        
+        log.debug(f"Downloading MP4 using authenticated session: {video_url[:100]}...")
+        response = self.session.get(video_url, stream=True, headers=headers)
+        
+        if response.status_code != 200:
+            log.error(f"MP4 download failed with status code: {response.status_code}")
+            log.error(f"Response headers: {dict(response.headers)}")
+            raise Exception(f"MP4 download failed: HTTP {response.status_code}")
+            
         total_size = int(response.headers.get('content-length', 0))
+        log.debug(f"Content length: {total_size} bytes")
 
         filepath = os.path.join(self.download_dir, f"{filename}.mp4")
         block_size = 1024  # 1 Kibibyte
@@ -558,6 +575,8 @@ class VideoDownloader:
         with open(filepath, 'wb') as file:
             for data in response.iter_content(block_size):
                 file.write(data)
+                
+        log.info(f"MP4 download completed: {filepath}")
 
     def _download_hls(self, video_url, filename):
         """
