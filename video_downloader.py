@@ -597,16 +597,19 @@ class VideoDownloader:
                 token = token_part
                 clean_url = base_url
             
-            # Make sure to add app param back if it exists
-            if app_param and '?' in clean_url:
-                clean_url += f"&app={app_param}"
-            elif app_param:
-                clean_url += f"?app={app_param}"
-                
+            # Don't modify the URL structure - use the original URL
             # Add token to headers
             headers['hdntl'] = token
+            if app_param:
+                # Add app parameter as a header for Akamai
+                headers['X-App-Id'] = app_param
+                log.debug(f"Added X-App-Id header: {app_param}")
+            
             log.debug(f"Added hdntl token to headers: {token[:30]}...")
-            log.debug(f"Using clean URL: {clean_url[:100]}...")
+            log.debug(f"Using original URL: {video_url[:100]}...")
+            
+            # Use the original URL with the token in the query string instead of cleaning it
+            clean_url = video_url
             
         elif 'hdnts=' in video_url:
             # Split the URL around the hdnts parameter
@@ -629,19 +632,27 @@ class VideoDownloader:
                 token = token_part
                 clean_url = base_url
             
-            # Make sure to add app param back if it exists
-            if app_param and '?' in clean_url:
-                clean_url += f"&app={app_param}"
-            elif app_param:
-                clean_url += f"?app={app_param}"
-                
+            # Don't modify the URL structure - use the original URL
             # Add token to headers
             headers['hdnts'] = token
+            if app_param:
+                # Add app parameter as a header for Akamai
+                headers['X-App-Id'] = app_param
+                log.debug(f"Added X-App-Id header: {app_param}")
+            
             log.debug(f"Added hdnts token to headers: {token[:30]}...")
-            log.debug(f"Using clean URL: {clean_url[:100]}...")
+            log.debug(f"Using original URL: {video_url[:100]}...")
+            
+            # Use the original URL with the token in the query string instead of cleaning it
+            clean_url = video_url
         
         # Add additional Akamai-specific headers that might help
-        headers['Access-Control-Request-Headers'] = 'hdntl,hdnts'
+        headers['Access-Control-Request-Headers'] = 'origin,range,hdntl,hdnts,X-App-Id'
+        headers['Range'] = 'bytes=0-'  # Request initial range to help with Akamai authentication
+        
+        # Add application-specific headers that Hotmart might require
+        if app_param:
+            headers['app'] = app_param  # Sometimes Akamai wants this as a header not a query param
         
         # Log full headers for debugging
         log.debug(f"Request headers: {headers}")
@@ -723,16 +734,19 @@ class VideoDownloader:
                     token = token_part
                     clean_url = base_url
                 
-                # Make sure to add app param back if it exists
-                if app_param and '?' in clean_url:
-                    clean_url += f"&app={app_param}"
-                elif app_param:
-                    clean_url += f"?app={app_param}"
-                    
+                # Don't modify the URL structure - use the original URL
                 # Add token to headers
                 headers['hdntl'] = token
+                if app_param:
+                    # Add app parameter as a header for Akamai
+                    headers['X-App-Id'] = app_param
+                    log.debug(f"Added X-App-Id header: {app_param}")
+                
                 log.debug(f"Added hdntl token to headers: {token[:30]}...")
-                log.debug(f"Using clean URL: {clean_url[:100]}...")
+                log.debug(f"Using original URL: {video_url[:100]}...")
+                
+                # Use the original URL with the token in the query string instead of cleaning it
+                clean_url = video_url
                 
             elif 'hdnts=' in video_url:
                 # Split the URL around the hdnts parameter
@@ -755,19 +769,27 @@ class VideoDownloader:
                     token = token_part
                     clean_url = base_url
                 
-                # Make sure to add app param back if it exists
-                if app_param and '?' in clean_url:
-                    clean_url += f"&app={app_param}"
-                elif app_param:
-                    clean_url += f"?app={app_param}"
-                    
+                # Don't modify the URL structure - use the original URL
                 # Add token to headers
                 headers['hdnts'] = token
+                if app_param:
+                    # Add app parameter as a header for Akamai
+                    headers['X-App-Id'] = app_param
+                    log.debug(f"Added X-App-Id header: {app_param}")
+                
                 log.debug(f"Added hdnts token to headers: {token[:30]}...")
-                log.debug(f"Using clean URL: {clean_url[:100]}...")
+                log.debug(f"Using original URL: {video_url[:100]}...")
+                
+                # Use the original URL with the token in the query string instead of cleaning it
+                clean_url = video_url
             
             # Add additional Akamai-specific headers that might help
-            headers['Access-Control-Request-Headers'] = 'hdntl,hdnts'
+            headers['Access-Control-Request-Headers'] = 'origin,range,hdntl,hdnts,X-App-Id'
+            headers['Range'] = 'bytes=0-'  # Request initial range to help with Akamai authentication
+            
+            # Add application-specific headers that Hotmart might require
+            if app_param:
+                headers['app'] = app_param  # Sometimes Akamai wants this as a header not a query param
             
             # Log headers for debugging
             log.debug(f"HLS request headers: {headers}")
@@ -828,6 +850,7 @@ class VideoDownloader:
         # Add app parameter header if present
         if app_param:
             auth_headers.append(f"'X-App-Id: {app_param}'")
+            auth_headers.append(f"'app: {app_param}'")  # Try both variations
         
         # Add Akamai-specific auth tokens if present in URL
         if 'hdntl=' in video_url:
@@ -843,6 +866,9 @@ class VideoDownloader:
                 auth_token = auth_token.split('&')[0]
             auth_headers.append(f"'hdnts: {auth_token}'")
             log.debug(f"Added hdnts token to ffmpeg headers: {auth_token[:30]}...")
+            
+        # Pass the URL as-is rather than cleaning it
+        auth_headers.append(f"'Range: bytes=0-'")
         
         # Add Access-Control-Request headers
         auth_headers.append("'Access-Control-Request-Headers: origin,range,hdntl,hdnts'")
@@ -855,6 +881,10 @@ class VideoDownloader:
     def _download_with_ffmpeg_python(self, video_url, output_path, headers_arg):
         """Download video using ffmpeg-python library."""
         log.debug(f"Starting ffmpeg download to {output_path}")
+        
+        # Keep the original URL with all parameters
+        log.debug(f"Using complete URL with ffmpeg: {video_url[:100]}...")
+        
         stream = ffmpeg.input(
             video_url,
             headers=headers_arg
@@ -868,11 +898,59 @@ class VideoDownloader:
         """Download video using direct ffmpeg subprocess call as fallback."""
         log.debug("Using ffmpeg subprocess method as fallback")
         cookie_header = '; '.join([f"{c.name}={c.value}" for c in self.session.cookies])
+        
+        # Extract auth token and app parameter if present
+        headers = []
+        app_param = None
+        auth_token = None
+        
+        # Extract app param if present
+        if '&app=' in video_url:
+            app_param = video_url.split('&app=')[1]
+            if '&' in app_param:
+                app_param = app_param.split('&')[0]
+            log.debug(f"Found app parameter for ffmpeg subprocess: {app_param}")
+            
+        # Extract token if present
+        if 'hdntl=' in video_url:
+            auth_token = video_url.split('hdntl=')[1]
+            if '&' in auth_token:
+                auth_token = auth_token.split('&')[0]
+            log.debug(f"Extracted hdntl token for ffmpeg subprocess: {auth_token[:30]}...")
+        elif 'hdnts=' in video_url:
+            auth_token = video_url.split('hdnts=')[1]
+            if '&' in auth_token:
+                auth_token = auth_token.split('&')[0]
+            log.debug(f"Extracted hdnts token for ffmpeg subprocess: {auth_token[:30]}...")
+        
+        # Build headers
+        headers.append(f"Origin: https://cf-embed.play.hotmart.com")
+        headers.append(f"Referer: https://cf-embed.play.hotmart.com/")
+        headers.append(f"Cookie: {cookie_header}")
+        headers.append(f"User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0")
+        headers.append(f"Accept: */*")
+        headers.append(f"Accept-Language: en-US,en;q=0.5")
+        headers.append(f"Range: bytes=0-")
+        
+        # Add app parameter if present
+        if app_param:
+            headers.append(f"X-App-Id: {app_param}")
+            headers.append(f"app: {app_param}")
+        
+        # Add token if present
+        if auth_token:
+            if 'hdntl=' in video_url:
+                headers.append(f"hdntl: {auth_token}")
+            else:
+                headers.append(f"hdnts: {auth_token}")
+
+        # Join headers
+        headers_str = "\r\n".join(headers)
 
         cmd = [
             'ffmpeg', '-y',
-            '-headers', f"Origin: https://cf-embed.play.hotmart.com\r\nReferer: https://cf-embed.play.hotmart.com/\r\nCookie: {cookie_header}",
-            '-i', video_url,
+            '-headers', headers_str,
+            '-i', video_url,  # Use the original URL with all parameters
             '-c', 'copy',
             output_path
         ]
