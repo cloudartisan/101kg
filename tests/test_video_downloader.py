@@ -325,28 +325,46 @@ class TestVideoDownloaderDownload:
     
     def test_download_video_hls(self, video_downloader):
         """Test download of HLS video."""
-        with patch.object(video_downloader, '_download_hls') as mock_download_hls:
+        with patch.object(video_downloader, '_try_browser_download', return_value=False) as mock_browser_download, \
+             patch.object(video_downloader, '_download_hls') as mock_download_hls:
             result = video_downloader.download_video("https://example.com/video.m3u8", "test_video")
             
             assert result is True
+            mock_browser_download.assert_called_once_with("https://example.com/video.m3u8", "test_video")
             mock_download_hls.assert_called_once_with("https://example.com/video.m3u8", "test_video")
     
     def test_download_video_mp4(self, video_downloader):
         """Test download of MP4 video."""
-        with patch.object(video_downloader, '_download_mp4') as mock_download_mp4:
+        with patch.object(video_downloader, '_try_browser_download', return_value=False) as mock_browser_download, \
+             patch.object(video_downloader, '_download_mp4') as mock_download_mp4:
             result = video_downloader.download_video("https://example.com/video.mp4", "test_video")
             
             assert result is True
+            mock_browser_download.assert_called_once_with("https://example.com/video.mp4", "test_video")
             mock_download_mp4.assert_called_once_with("https://example.com/video.mp4", "test_video")
+            
+    def test_download_video_browser_success(self, video_downloader):
+        """Test browser-based download success."""
+        with patch.object(video_downloader, '_try_browser_download', return_value=True) as mock_browser_download, \
+             patch.object(video_downloader, '_download_hls') as mock_download_hls, \
+             patch.object(video_downloader, '_download_mp4') as mock_download_mp4:
+            result = video_downloader.download_video("https://example.com/video.m3u8", "test_video")
+            
+            assert result is True
+            mock_browser_download.assert_called_once_with("https://example.com/video.m3u8", "test_video")
+            mock_download_hls.assert_not_called()
+            mock_download_mp4.assert_not_called()
     
     def test_download_video_exception(self, video_downloader):
         """Test exception handling during video download."""
-        with patch.object(video_downloader, '_download_hls') as mock_download_hls:
+        with patch.object(video_downloader, '_try_browser_download', return_value=False) as mock_browser_download, \
+             patch.object(video_downloader, '_download_hls') as mock_download_hls:
             mock_download_hls.side_effect = Exception("Download failed")
             
             result = video_downloader.download_video("https://example.com/video.m3u8", "test_video")
             
             assert result is False
+            mock_browser_download.assert_called_once_with("https://example.com/video.m3u8", "test_video")
     
     def test_download_mp4_success(self, video_downloader):
         """Test successful MP4 download."""
@@ -394,6 +412,48 @@ class TestVideoDownloaderDownload:
             video_downloader._download_mp4("https://example.com/video.mp4", "test_video")
         
         assert "MP4 download failed: HTTP 401" in str(excinfo.value)
+        
+    def test_browser_download_success(self, video_downloader):
+        """Test successful browser-based download."""
+        # Mock the driver
+        mock_result = {
+            'success': True,
+            'dataUrl': 'data:application/octet-stream;base64,dGVzdCBkYXRh',  # "test data" in base64
+            'contentLength': 9
+        }
+        video_downloader.driver.execute_script.return_value = mock_result
+        
+        # Mock file operations
+        with patch('builtins.open', mock_open()) as mock_file, \
+             patch('os.path.join', return_value='/path/to/test_video.mp4'):
+            
+            result = video_downloader._try_browser_download("https://example.com/video.mp4", "test_video")
+            
+            assert result is True
+            video_downloader.driver.get.assert_called_once_with("https://example.com/video.mp4")
+            mock_file.assert_called_once_with('/path/to/test_video.mp4', 'wb')
+            
+    def test_browser_download_failure(self, video_downloader):
+        """Test failed browser-based download."""
+        # Mock the driver to return a failed result
+        mock_result = {
+            'success': False,
+            'error': 'HTTP Error: 403'
+        }
+        video_downloader.driver.execute_script.return_value = mock_result
+        
+        result = video_downloader._try_browser_download("https://example.com/video.mp4", "test_video")
+        
+        assert result is False
+        video_downloader.driver.get.assert_called_once_with("https://example.com/video.mp4")
+        
+    def test_browser_hls_download(self, video_downloader):
+        """Test HLS browser-based download calls correct method."""
+        with patch.object(video_downloader, '_try_browser_hls_download', return_value=True) as mock_hls_download:
+            result = video_downloader._try_browser_download("https://example.com/video.m3u8", "test_video")
+            
+            assert result is True
+            mock_hls_download.assert_called_once_with("https://example.com/video.m3u8", "test_video")
 
 
 class TestVideoDownloaderHlsDownload:

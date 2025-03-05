@@ -528,7 +528,11 @@ class VideoDownloader:
             bool: True if download successful, False otherwise
         """
         try:
-            # Better detection of video type
+            # Try browser-based download first for maximum compatibility
+            if self._try_browser_download(video_url, filename):
+                return True
+
+            # Fallback to regular methods if browser download fails
             if '.m3u8' in video_url or '/hls/' in video_url:
                 log.info(f"Detected HLS stream format for {filename}")
                 self._download_hls(video_url, filename)
@@ -542,6 +546,303 @@ class VideoDownloader:
 
         except Exception as e:
             log.error(f"Download failed for {filename}: {str(e)}", exc_info=True)
+            return False
+            
+    def _try_browser_download(self, video_url, filename):
+        """
+        Try to download the video using the browser's network capabilities.
+        This is the most reliable method as it uses the authenticated browser session.
+        
+        Args:
+            video_url (str): URL of the video to download
+            filename (str): Filename to save the video as
+            
+        Returns:
+            bool: True if download successful, False otherwise
+        """
+        try:
+            log.info(f"Attempting browser-based download for {filename}")
+            
+            # First, load the video URL in the browser to ensure we're authenticated
+            log.debug(f"Loading video URL in browser: {video_url[:100]}...")
+            self.driver.get(video_url)
+            time.sleep(3)  # Give browser time to authenticate
+            
+            # If it's an HLS stream, we need a different approach
+            if '.m3u8' in video_url or '/hls/' in video_url:
+                return self._try_browser_hls_download(video_url, filename)
+            
+            # For direct MP4 downloads, we can use fetch API
+            file_path = os.path.join(self.download_dir, f"{filename}.mp4")
+            
+            # Use JavaScript fetch API to download the video through the browser session
+            script = """
+            async function downloadFile(url, filePath) {
+                try {
+                    console.log("Fetching:", url);
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        credentials: 'include',
+                        headers: {
+                            'Origin': 'https://cf-embed.play.hotmart.com',
+                            'Referer': 'https://cf-embed.play.hotmart.com/'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        console.error("Error fetching file:", response.status, response.statusText);
+                        return { success: false, error: "HTTP Error: " + response.status };
+                    }
+                    
+                    console.log("Response received, getting array buffer...");
+                    const buffer = await response.arrayBuffer();
+                    const dataUrl = 'data:application/octet-stream;base64,' + arrayBufferToBase64(buffer);
+                    
+                    return {
+                        success: true,
+                        dataUrl: dataUrl,
+                        contentType: response.headers.get('Content-Type'),
+                        contentLength: buffer.byteLength
+                    };
+                } catch (error) {
+                    console.error("Download error:", error);
+                    return { success: false, error: error.toString() };
+                }
+            }
+            
+            function arrayBufferToBase64(buffer) {
+                let binary = '';
+                const bytes = new Uint8Array(buffer);
+                const len = bytes.byteLength;
+                for (let i = 0; i < len; i++) {
+                    binary += String.fromCharCode(bytes[i]);
+                }
+                return window.btoa(binary);
+            }
+            
+            return await downloadFile(arguments[0], arguments[1]);
+            """
+            
+            log.debug("Executing JavaScript download script")
+            result = self.driver.execute_script(script, video_url, file_path)
+            
+            if not result or not result.get('success'):
+                error = result.get('error') if result else "Unknown error"
+                log.error(f"Browser download failed: {error}")
+                return False
+                
+            # Save the base64 data to a file
+            data_url = result.get('dataUrl')
+            content_length = result.get('contentLength', 0)
+            
+            if not data_url or not content_length:
+                log.error("Invalid data received from browser")
+                return False
+                
+            log.debug(f"Received {content_length} bytes from browser, saving to {file_path}")
+            
+            # Extract and save base64 data
+            import base64
+            header, data = data_url.split(',', 1)
+            binary_data = base64.b64decode(data)
+            
+            with open(file_path, 'wb') as f:
+                f.write(binary_data)
+                
+            log.info(f"Browser download completed: {file_path} ({content_length} bytes)")
+            return True
+            
+        except Exception as e:
+            log.error(f"Browser download failed: {str(e)}", exc_info=True)
+            return False
+            
+    def _try_browser_hls_download(self, video_url, filename):
+        """
+        Try to download HLS stream using browser to access the playlist and segments.
+        
+        Args:
+            video_url (str): URL of the HLS playlist
+            filename (str): Filename to save the video as
+            
+        Returns:
+            bool: True if download successful, False otherwise
+        """
+        try:
+            log.info(f"Attempting browser-based HLS download for {filename}")
+            
+            # File path for output
+            output_path = os.path.join(self.download_dir, f"{filename}.mp4")
+            
+            # First get the playlist URL via JavaScript in the browser
+            fetch_script = """
+            async function fetchM3U8Content(url) {
+                try {
+                    console.log("Fetching M3U8:", url);
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        credentials: 'include',
+                        headers: {
+                            'Origin': 'https://cf-embed.play.hotmart.com',
+                            'Referer': 'https://cf-embed.play.hotmart.com/'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        return { success: false, error: "HTTP Error: " + response.status };
+                    }
+                    
+                    const text = await response.text();
+                    return { success: true, content: text };
+                } catch (error) {
+                    return { success: false, error: error.toString() };
+                }
+            }
+            
+            return await fetchM3U8Content(arguments[0]);
+            """
+            
+            log.debug("Fetching M3U8 playlist via browser")
+            result = self.driver.execute_script(fetch_script, video_url)
+            
+            if not result or not result.get('success'):
+                error = result.get('error') if result else "Unknown error"
+                log.error(f"Failed to fetch M3U8 playlist: {error}")
+                return False
+                
+            playlist_content = result.get('content')
+            if not playlist_content:
+                log.error("Empty M3U8 playlist received")
+                return False
+                
+            log.debug(f"M3U8 playlist received ({len(playlist_content)} bytes)")
+            
+            # Parse playlist to get the base URL for segments
+            base_url = video_url.rsplit('/', 1)[0] + '/'
+            
+            # Extract all segment URLs from playlist
+            segment_urls = []
+            for line in playlist_content.splitlines():
+                line = line.strip()
+                if line and not line.startswith('#') and line.endswith('.ts'):
+                    # If it's a relative URL, make it absolute
+                    if not line.startswith('http'):
+                        line = base_url + line
+                    segment_urls.append(line)
+            
+            if not segment_urls:
+                log.error("No video segments found in playlist")
+                return False
+                
+            log.debug(f"Found {len(segment_urls)} video segments")
+            
+            # Create a temporary directory for segments
+            import tempfile
+            import shutil
+            
+            temp_dir = tempfile.mkdtemp()
+            segment_files = []
+            
+            try:
+                # Download each segment
+                for i, segment_url in enumerate(segment_urls):
+                    log.debug(f"Downloading segment {i+1}/{len(segment_urls)}")
+                    segment_file = os.path.join(temp_dir, f"segment_{i:04d}.ts")
+                    segment_files.append(segment_file)
+                    
+                    # Script to fetch segment
+                    segment_script = """
+                    async function fetchSegment(url) {
+                        try {
+                            const response = await fetch(url, {
+                                method: 'GET',
+                                credentials: 'include',
+                                headers: {
+                                    'Origin': 'https://cf-embed.play.hotmart.com',
+                                    'Referer': 'https://cf-embed.play.hotmart.com/'
+                                }
+                            });
+                            
+                            if (!response.ok) {
+                                return { success: false, error: "HTTP Error: " + response.status };
+                            }
+                            
+                            const buffer = await response.arrayBuffer();
+                            const dataUrl = 'data:application/octet-stream;base64,' + arrayBufferToBase64(buffer);
+                            
+                            return {
+                                success: true,
+                                dataUrl: dataUrl,
+                                contentLength: buffer.byteLength
+                            };
+                        } catch (error) {
+                            return { success: false, error: error.toString() };
+                        }
+                    }
+                    
+                    function arrayBufferToBase64(buffer) {
+                        let binary = '';
+                        const bytes = new Uint8Array(buffer);
+                        const len = bytes.byteLength;
+                        for (let i = 0; i < len; i++) {
+                            binary += String.fromCharCode(bytes[i]);
+                        }
+                        return window.btoa(binary);
+                    }
+                    
+                    return await fetchSegment(arguments[0]);
+                    """
+                    
+                    segment_result = self.driver.execute_script(segment_script, segment_url)
+                    
+                    if not segment_result or not segment_result.get('success'):
+                        error = segment_result.get('error') if segment_result else "Unknown error"
+                        log.error(f"Failed to download segment {i+1}: {error}")
+                        return False
+                        
+                    # Extract and save base64 data
+                    data_url = segment_result.get('dataUrl')
+                    content_length = segment_result.get('contentLength', 0)
+                    
+                    import base64
+                    header, data = data_url.split(',', 1)
+                    binary_data = base64.b64decode(data)
+                    
+                    with open(segment_file, 'wb') as f:
+                        f.write(binary_data)
+                        
+                    log.debug(f"Segment {i+1} downloaded: {content_length} bytes")
+                
+                # Concatenate all segments into a single TS file
+                ts_output = os.path.join(temp_dir, "combined.ts")
+                with open(ts_output, 'wb') as outfile:
+                    for segment_file in segment_files:
+                        with open(segment_file, 'rb') as infile:
+                            outfile.write(infile.read())
+                
+                # Use ffmpeg to convert TS to MP4
+                log.debug(f"Converting combined TS to MP4: {output_path}")
+                import subprocess
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', ts_output,
+                    '-c', 'copy',
+                    output_path
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    log.error(f"FFmpeg conversion failed: {result.stderr}")
+                    return False
+                
+                log.info(f"HLS browser download completed: {output_path}")
+                return True
+                
+            finally:
+                # Clean up temporary directory
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                
+        except Exception as e:
+            log.error(f"Browser HLS download failed: {str(e)}", exc_info=True)
             return False
 
     def _download_mp4(self, video_url, filename):
