@@ -175,3 +175,6 @@ videos/*
 !videos/.gitkeep
 logs/*
 !logs/.gitkeep
+
+# Credentials config file
+config.json

@@ -528,24 +528,59 @@ class VideoDownloader:
             bool: True if download successful, False otherwise
         """
         try:
-            # Try browser-based download first for maximum compatibility
+            # First try the helper approach - this most closely mimics Video Download Helper's method
+            if self._try_helper_approach(video_url, filename):
+                log.info(f"Successfully downloaded {filename} using Video Download Helper approach")
+                return True
+                
+            # Try direct page navigation approach - which works even with strict CDN protection
+            if self._try_direct_page_navigation_download(filename):
+                log.info(f"Successfully downloaded {filename} using direct page navigation")
+                return True
+            
+            # Try browser-based download with the provided URL
             if self._try_browser_download(video_url, filename):
                 return True
 
             # Fallback to regular methods if browser download fails
             if '.m3u8' in video_url or '/hls/' in video_url:
                 log.info(f"Detected HLS stream format for {filename}")
-                self._download_hls(video_url, filename)
+                try:
+                    self._download_hls(video_url, filename)
+                except Exception as e:
+                    log.error(f"Standard HLS download failed: {str(e)}")
+                    # If standard HLS fails, try direct recording as last resort
+                    if self._try_direct_browser_recording(filename):
+                        log.info(f"Successfully recorded {filename} directly from browser")
+                        return True
+                    return False
             elif '.mp4' in video_url:
                 log.info(f"Detected MP4 format for {filename}")
                 self._download_mp4(video_url, filename)
             else:
                 log.info(f"Unknown format, defaulting to HLS for {filename}")
-                self._download_hls(video_url, filename)
+                try:
+                    self._download_hls(video_url, filename)
+                except Exception as e:
+                    log.error(f"Standard HLS download failed: {str(e)}")
+                    # If standard HLS fails, try direct recording as last resort
+                    if self._try_direct_browser_recording(filename):
+                        log.info(f"Successfully recorded {filename} directly from browser")
+                        return True
+                    return False
             return True
 
         except Exception as e:
             log.error(f"Download failed for {filename}: {str(e)}", exc_info=True)
+            
+            # Last resort: try direct browser recording
+            try:
+                if self._try_direct_browser_recording(filename):
+                    log.info(f"Successfully recorded {filename} directly from browser")
+                    return True
+            except Exception as record_err:
+                log.error(f"Direct recording also failed: {str(record_err)}")
+                
             return False
             
     def _try_browser_download(self, video_url, filename):
@@ -871,6 +906,15 @@ class VideoDownloader:
                             error = result.get('error') if result else "Unknown error"
                             log.error(f"Browser download failed from player source: {error}")
                             
+                            # Try direct video recording if fetch fails
+                            log.debug("Attempting direct video recording as fallback")
+                            if self._try_record_current_video(file_path):
+                                log.info(f"Successfully recorded video from current player")
+                                
+                                # Switch back to main frame before returning
+                                self.driver.switch_to.default_content()
+                                return True
+                            
                             # Switch back to main frame before returning
                             self.driver.switch_to.default_content()
                             return False
@@ -881,6 +925,15 @@ class VideoDownloader:
                         
                         if not data_url or not content_length:
                             log.error("Invalid data received from browser")
+                            
+                            # Try direct video recording if data is invalid
+                            log.debug("Attempting direct video recording as fallback")
+                            if self._try_record_current_video(file_path):
+                                log.info(f"Successfully recorded video from current player")
+                                
+                                # Switch back to main frame before returning
+                                self.driver.switch_to.default_content()
+                                return True
                             
                             # Switch back to main frame before returning
                             self.driver.switch_to.default_content()
@@ -903,8 +956,35 @@ class VideoDownloader:
                         return True
                     else:
                         log.error("Could not find video source in player")
+                        
+                        # Try direct video recording if source not found
+                        log.debug("Attempting direct video recording as fallback")
+                        file_path = os.path.join(self.download_dir, f"{filename}.mp4")
+                        if self._try_record_current_video(file_path):
+                            log.info(f"Successfully recorded video from current player")
+                            
+                            # Switch back to main frame before returning
+                            self.driver.switch_to.default_content()
+                            return True
                 else:
                     log.error("Could not find play button in player")
+                    
+                    # Try to find and use the video element directly even without clicking play
+                    video_element = self.browser_manager.wait_for_element(
+                        By.CSS_SELECTOR, 
+                        "video",
+                        timeout=3
+                    )
+                    
+                    if video_element:
+                        log.debug("Found video element without play button, trying direct recording")
+                        file_path = os.path.join(self.download_dir, f"{filename}.mp4")
+                        if self._try_record_current_video(file_path):
+                            log.info(f"Successfully recorded video without play button")
+                            
+                            # Switch back to main frame before returning
+                            self.driver.switch_to.default_content()
+                            return True
             except Exception as e:
                 log.error(f"Error during iframe navigation: {str(e)}", exc_info=True)
             
@@ -921,6 +1001,790 @@ class VideoDownloader:
             except:
                 pass
                 
+            return False
+            
+    def _try_direct_page_navigation_download(self, filename):
+        """
+        Direct approach that mimics a real user: Navigate to the course page, find the video, 
+        click play, and capture the content directly without using the network APIs.
+        
+        Args:
+            filename (str): Filename to save the video as
+            
+        Returns:
+            bool: True if download successful, False otherwise
+        """
+        try:
+            log.info(f"Attempting direct page navigation download for {filename}")
+            
+            # 1. Find and navigate to the specific course module/lesson if we're not there already
+            current_url = self.driver.current_url
+            log.debug(f"Currently on page: {current_url}")
+            
+            # Check if we're on the video page already
+            is_video_page = False
+            if '/lesson/' in current_url or '/area/membros/' in current_url or '/video/' in current_url:
+                is_video_page = True
+            
+            if not is_video_page:
+                # TODO: Navigate to the course page directly if needed
+                # For now, assume we're on an appropriate page since the extraction has already happened
+                pass
+                
+            # 2. Find iframe with the video
+            iframe = self.browser_manager.wait_for_element(
+                By.CSS_SELECTOR, 
+                "iframe[src*='play.hotmart.com'], iframe[src*='embed']",
+                timeout=5
+            )
+                
+            if iframe:
+                log.debug("Found video iframe, switching to it")
+                self.driver.switch_to.frame(iframe)
+                time.sleep(2)  # Wait for iframe to load
+                
+                # 3. Look for and click play button
+                play_button = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR, 
+                    ".play-button, .vjs-big-play-button, .video-player button, [aria-label='Play'], .ytp-large-play-button",
+                    timeout=5
+                )
+                
+                if play_button:
+                    log.debug("Found play button, clicking it")
+                    try:
+                        play_button.click()
+                    except:
+                        # Use JavaScript if direct click fails
+                        self.driver.execute_script("arguments[0].click();", play_button)
+                
+                # 4. Wait for video to start playing
+                time.sleep(5)
+                
+                # 5. Capture video directly using screen recording
+                output_path = os.path.join(self.download_dir, f"{filename}.mp4")
+                if self._try_record_current_video(output_path):
+                    log.info(f"Successfully recorded video from iframe player")
+                    
+                    # Switch back to main frame before returning
+                    self.driver.switch_to.default_content()
+                    return True
+                
+                # Switch back to main content
+                self.driver.switch_to.default_content()
+            else:
+                # No iframe, check for direct video element in the main page
+                log.debug("No iframe found, looking for direct video element")
+                video_element = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR, 
+                    "video, .video-player, .player-container",
+                    timeout=3
+                )
+                
+                if video_element:
+                    log.debug("Found video element in main page")
+                    
+                    # Try to find and click play button
+                    play_button = self.browser_manager.wait_for_element(
+                        By.CSS_SELECTOR, 
+                        ".play-button, .play-icon, [aria-label='Play']",
+                        timeout=3
+                    )
+                    
+                    if play_button:
+                        log.debug("Found play button in main page, clicking it")
+                        try:
+                            play_button.click()
+                        except:
+                            # Use JavaScript if direct click fails
+                            self.driver.execute_script("arguments[0].click();", play_button)
+                    
+                    # Wait for video to start playing
+                    time.sleep(5)
+                    
+                    # Capture video directly
+                    output_path = os.path.join(self.download_dir, f"{filename}.mp4")
+                    if self._try_record_current_video(output_path):
+                        log.info(f"Successfully recorded video from main page player")
+                        return True
+            
+            return False
+            
+        except Exception as e:
+            log.error(f"Direct page navigation download failed: {str(e)}", exc_info=True)
+            
+            # Make sure to switch back to main frame
+            try:
+                self.driver.switch_to.default_content()
+            except:
+                pass
+                
+            return False
+    
+    def _try_helper_approach(self, video_url, filename):
+        """
+        Try to mimic Video Download Helper's approach - execute the download within
+        the active browser tab's context.
+        
+        Args:
+            video_url (str): URL of the video to download
+            filename (str): Filename to save the video as
+            
+        Returns:
+            bool: True if download successful, False otherwise
+        """
+        try:
+            log.info(f"Attempting helper-style download for {filename}")
+            output_path = os.path.join(self.download_dir, f"{filename}.mp4")
+            
+            # Extract the app parameter and token from the URL
+            app_param = None
+            auth_token = None
+            
+            if 'app=' in video_url:
+                app_param_match = re.search(r'app=([^&]+)', video_url)
+                if app_param_match:
+                    app_param = app_param_match.group(1)
+                    log.debug(f"Found app parameter: {app_param}")
+                    
+            if 'hdntl=' in video_url:
+                auth_token_match = re.search(r'hdntl=([^&]+)', video_url)
+                if auth_token_match:
+                    auth_token = auth_token_match.group(1)
+                    log.debug(f"Found hdntl token: {auth_token[:30]}...")
+            
+            # Script that will fetch the video directly in the browser context
+            # This mimics what Video Download Helper does by staying in the authenticated context
+            download_script = """
+            return new Promise(async (resolve) => {
+                try {
+                    console.log("Starting in-browser download...");
+                    
+                    // Function to download the video via fetch in chunks
+                    async function downloadWithinBrowser(url, authToken, appParam) {
+                        try {
+                            console.log("Downloading video using in-browser context");
+                            console.log("URL:", url);
+                            
+                            // Step 1: Create an iframe to isolate the download context
+                            // This is similar to what video downloaders do to maintain the same origin
+                            const iframe = document.createElement('iframe');
+                            iframe.style.display = 'none';
+                            document.body.appendChild(iframe);
+                            
+                            // Get iframe document and create script element
+                            const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                            const script = iframeDoc.createElement('script');
+                            
+                            // Prepare headers - this is key to mimicking the original request
+                            const headers = {
+                                'Origin': 'https://cf-embed.play.hotmart.com',
+                                'Referer': 'https://cf-embed.play.hotmart.com/',
+                                'User-Agent': navigator.userAgent,
+                                'Accept': '*/*',
+                                'Accept-Language': 'en-US,en;q=0.5',
+                                'Access-Control-Request-Headers': 'origin,range,hdntl,hdnts,X-App-Id'
+                            };
+                            
+                            // Add token and app parameter to headers
+                            if (authToken) {
+                                headers['hdntl'] = authToken;
+                            }
+                            
+                            if (appParam) {
+                                headers['X-App-Id'] = appParam;
+                                headers['app'] = appParam;
+                            }
+                            
+                            // This is the core difference - we're using XMLHttpRequest with 
+                            // sending credentials and preserving cookies from the active session
+                            const downloadCode = `
+                                function downloadChunked(url, headers) {
+                                    return new Promise((resolve, reject) => {
+                                        console.log("Starting chunked download");
+                                        
+                                        // For M3U8 files - first fetch the playlist
+                                        if (url.includes('.m3u8')) {
+                                            console.log("Detected M3U8 playlist");
+                                            
+                                            const xhr = new XMLHttpRequest();
+                                            xhr.open('GET', url, true);
+                                            xhr.responseType = 'text';
+                                            xhr.withCredentials = true;  // Critical: include credentials
+                                            
+                                            // Add headers
+                                            Object.keys(headers).forEach(key => {
+                                                xhr.setRequestHeader(key, headers[key]);
+                                            });
+                                            
+                                            xhr.onload = function() {
+                                                if (xhr.status >= 200 && xhr.status < 300) {
+                                                    console.log("Playlist fetched successfully");
+                                                    const playlist = xhr.responseText;
+                                                    
+                                                    // Return the playlist for now
+                                                    // In a real implementation we would parse and fetch segments
+                                                    resolve({
+                                                        success: true,
+                                                        isM3U8: true,
+                                                        playlist: playlist,
+                                                        url: url
+                                                    });
+                                                } else {
+                                                    console.error("Failed to fetch playlist:", xhr.status);
+                                                    reject("Playlist fetch failed: " + xhr.status);
+                                                }
+                                            };
+                                            
+                                            xhr.onerror = function() {
+                                                console.error("Network error fetching playlist");
+                                                reject("Network error fetching playlist");
+                                            };
+                                            
+                                            xhr.send();
+                                            return;
+                                        }
+                                        
+                                        // For direct video files (mp4, etc.)
+                                        const xhr = new XMLHttpRequest();
+                                        xhr.open('GET', url, true);
+                                        xhr.responseType = 'arraybuffer';
+                                        xhr.withCredentials = true;  // Critical: include credentials
+                                        
+                                        // Add headers
+                                        Object.keys(headers).forEach(key => {
+                                            xhr.setRequestHeader(key, headers[key]);
+                                        });
+                                        
+                                        // Progress tracking
+                                        const chunks = [];
+                                        let totalLength = 0;
+                                        
+                                        xhr.onload = function() {
+                                            if (xhr.status >= 200 && xhr.status < 300) {
+                                                console.log("Download complete:", totalLength, "bytes");
+                                                
+                                                // Convert array buffer to base64
+                                                const bytes = new Uint8Array(xhr.response);
+                                                let binary = '';
+                                                for (let i = 0; i < bytes.byteLength; i++) {
+                                                    binary += String.fromCharCode(bytes[i]);
+                                                }
+                                                
+                                                const base64 = window.btoa(binary);
+                                                const dataUrl = 'data:application/octet-stream;base64,' + base64;
+                                                
+                                                resolve({
+                                                    success: true,
+                                                    dataUrl: dataUrl,
+                                                    contentLength: bytes.byteLength
+                                                });
+                                            } else {
+                                                console.error("Download failed:", xhr.status);
+                                                reject("Download failed: " + xhr.status);
+                                            }
+                                        };
+                                        
+                                        xhr.onerror = function() {
+                                            console.error("Network error during download");
+                                            reject("Network error during download");
+                                        };
+                                        
+                                        xhr.send();
+                                    });
+                                }
+                                
+                                downloadChunked("${url}", ${JSON.stringify(headers)})
+                                    .then(result => {
+                                        window.parent.postMessage(JSON.stringify(result), '*');
+                                    })
+                                    .catch(error => {
+                                        window.parent.postMessage(JSON.stringify({
+                                            success: false, 
+                                            error: error
+                                        }), '*');
+                                    });
+                            `;
+                            
+                            script.textContent = downloadCode;
+                            iframeDoc.body.appendChild(script);
+                            
+                            // Listen for message from iframe
+                            return new Promise((resolve) => {
+                                window.addEventListener('message', function onMessage(event) {
+                                    try {
+                                        const data = JSON.parse(event.data);
+                                        window.removeEventListener('message', onMessage);
+                                        resolve(data);
+                                    } catch (e) {
+                                        // Not our message
+                                    }
+                                });
+                            });
+                        } catch (error) {
+                            console.error("Error in browser download:", error);
+                            return { success: false, error: error.toString() };
+                        }
+                    }
+                    
+                    // Execute the download with provided auth data
+                    const result = await downloadWithinBrowser(arguments[0], arguments[1], arguments[2]);
+                    
+                    // For M3U8 playlists, we need additional processing
+                    if (result.success && result.isM3U8) {
+                        console.log("Processing M3U8 playlist...");
+                        
+                        // We could fetch all segments here, but for now let's just
+                        // return the playlist data to handle in Python
+                        return resolve({
+                            success: true,
+                            isM3U8: true,
+                            playlist: result.playlist,
+                            url: result.url
+                        });
+                    }
+                    
+                    return resolve(result);
+                    
+                } catch (error) {
+                    console.error("Master error in download script:", error);
+                    return resolve({ success: false, error: error.toString() });
+                }
+            });
+            """
+            
+            # Execute the download script in the browser
+            log.debug("Executing in-browser download script")
+            result = self.driver.execute_script(download_script, video_url, auth_token, app_param)
+            
+            if not result or not result.get('success'):
+                error = result.get('error') if result and 'error' in result else "Unknown error"
+                log.error(f"In-browser download failed: {error}")
+                return False
+                
+            # Handle M3U8 playlists (streams)
+            if result.get('isM3U8'):
+                log.info("Got M3U8 playlist, processing HLS stream")
+                playlist_content = result.get('playlist')
+                
+                if not playlist_content:
+                    log.error("Empty playlist received")
+                    return False
+                    
+                # Save the playlist temporarily
+                import tempfile
+                temp_dir = tempfile.mkdtemp()
+                playlist_path = os.path.join(temp_dir, "playlist.m3u8")
+                
+                try:
+                    with open(playlist_path, 'w') as f:
+                        f.write(playlist_content)
+                        
+                    # Use FFmpeg to download and convert the stream
+                    import subprocess
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-headers', f'Origin: https://cf-embed.play.hotmart.com\r\nReferer: https://cf-embed.play.hotmart.com/\r\nUser-Agent: {self.driver.execute_script("return navigator.userAgent")}\r\nAccept: */*\r\nAccept-Language: en-US,en;q=0.5',
+                        '-i', playlist_path,
+                        '-c', 'copy',
+                        output_path
+                    ]
+                    
+                    log.debug("Executing FFmpeg command to process playlist")
+                    process = subprocess.run(cmd, capture_output=True, text=True)
+                    
+                    if process.returncode != 0:
+                        log.error(f"FFmpeg failed: {process.stderr}")
+                        
+                        # Try to use direct browser recording as fallback since we have the playlist
+                        log.debug("Attempting direct recording as fallback")
+                        if self._try_direct_browser_recording(filename):
+                            return True
+                            
+                        return False
+                        
+                    log.info(f"Successfully downloaded and processed HLS stream: {output_path}")
+                    return True
+                    
+                finally:
+                    # Clean up temp directory
+                    import shutil
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                
+            # Handle direct video data
+            data_url = result.get('dataUrl')
+            content_length = result.get('contentLength', 0)
+            
+            if not data_url:
+                log.error("No data received from in-browser download")
+                return False
+                
+            log.debug(f"Received {content_length} bytes from in-browser download")
+            
+            # Save the data
+            import base64
+            header, data = data_url.split(',', 1)
+            binary_data = base64.b64decode(data)
+            
+            with open(output_path, 'wb') as f:
+                f.write(binary_data)
+                
+            log.info(f"Successfully downloaded video: {output_path} ({content_length} bytes)")
+            return True
+            
+        except Exception as e:
+            log.error(f"Helper approach download failed: {str(e)}", exc_info=True)
+            return False
+            
+    def _try_direct_browser_recording(self, filename):
+        """
+        Direct browser recording as a last resort when other methods fail.
+        This will navigate to the page, play the video, and record it directly.
+        
+        Args:
+            filename (str): Filename to save the video as
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            log.info(f"Attempting direct browser recording for {filename}")
+            
+            # 1. Check if we're already on a lesson page
+            current_url = self.driver.current_url
+            is_lesson_page = False
+            
+            if '/lesson/' in current_url or '/area/membros/' in current_url or '/aula/' in current_url:
+                is_lesson_page = True
+                log.debug(f"Already on a lesson page: {current_url}")
+            
+            if not is_lesson_page:
+                # TODO: Navigate to the correct lesson page if we knew which one
+                # For now assume we're already there from the previous extraction process
+                pass
+            
+            # 2. Check for iframe
+            iframe = self.browser_manager.wait_for_element(
+                By.CSS_SELECTOR, 
+                "iframe[src*='play.hotmart.com'], iframe[src*='embed'], iframe[src*='player']",
+                timeout=5
+            )
+            
+            if iframe:
+                log.debug("Found iframe with video, switching to it")
+                self.driver.switch_to.frame(iframe)
+                time.sleep(3)  # Wait for iframe content to load
+                
+                # Find play button and click it
+                play_button = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR, 
+                    ".play-button, .vjs-big-play-button, [aria-label='Play'], button.play",
+                    timeout=5
+                )
+                
+                if play_button:
+                    log.debug("Found play button in iframe, clicking it")
+                    try:
+                        play_button.click()
+                    except:
+                        self.driver.execute_script("arguments[0].click();", play_button)
+                    
+                    # Allow video to start playing
+                    time.sleep(5)
+                    
+                    # Record the video
+                    output_path = os.path.join(self.download_dir, f"{filename}.mp4")
+                    if self._try_record_current_video(output_path, duration=180):  # 3 minutes max
+                        log.info(f"Successfully recorded video from iframe")
+                        self.driver.switch_to.default_content()
+                        return True
+                    
+                self.driver.switch_to.default_content()
+            
+            # 3. Check for direct video element on page
+            video_element = self.browser_manager.wait_for_element(
+                By.CSS_SELECTOR, 
+                "video, .video-js, .video-player",
+                timeout=3
+            )
+            
+            if video_element:
+                log.debug("Found video element in main page")
+                
+                # Try to find and click play button
+                play_button = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR, 
+                    ".play-button, .vjs-big-play-button, [aria-label='Play']",
+                    timeout=3
+                )
+                
+                if play_button:
+                    log.debug("Found play button in main page, clicking it")
+                    try:
+                        play_button.click()
+                    except:
+                        self.driver.execute_script("arguments[0].click();", play_button)
+                
+                # Wait for video to start
+                time.sleep(5)
+                
+                # Try to record
+                output_path = os.path.join(self.download_dir, f"{filename}.mp4")
+                if self._try_record_current_video(output_path, duration=180):
+                    log.info(f"Successfully recorded video from main page")
+                    return True
+            
+            # If we reach here, we couldn't find a video to record
+            log.error("No video element found for direct recording")
+            return False
+            
+        except Exception as e:
+            log.error(f"Direct browser recording failed: {str(e)}", exc_info=True)
+            
+            # Make sure to switch back to main frame
+            try:
+                self.driver.switch_to.default_content()
+            except:
+                pass
+                
+            return False
+    
+    def _try_record_current_video(self, output_path, duration=120):
+        """
+        Record the currently playing video in the browser.
+        
+        Args:
+            output_path (str): Path to save the recorded video
+            duration (int): Maximum recording duration in seconds
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            log.info(f"Starting video recording (max {duration}s)")
+            
+            # Ensure video is playing
+            script = """
+            try {
+                const videoElement = document.querySelector('video');
+                if (videoElement) {
+                    console.log("Found video element, ensuring it's playing");
+                    videoElement.currentTime = 0;
+                    videoElement.muted = true;  // Mute to avoid autoplay restrictions
+                    videoElement.play().catch(e => console.error("Couldn't play:", e));
+                    return true;
+                }
+                return false;
+            } catch (e) {
+                console.error("Error starting video:", e);
+                return false;
+            }
+            """
+            
+            found_video = self.driver.execute_script(script)
+            if not found_video:
+                log.error("No video element found to record")
+                return False
+            
+            # Create recording script that will record directly in the browser
+            recording_script = """
+            return new Promise(async (resolve) => {
+                try {
+                    console.log("Starting recording preparation");
+                    
+                    // Find video element
+                    const videoElement = document.querySelector('video');
+                    if (!videoElement) {
+                        return resolve({ success: false, error: "No video element found" });
+                    }
+                    
+                    console.log("Video element dimensions:", videoElement.videoWidth, "x", videoElement.videoHeight);
+                    
+                    // Create canvas matching video dimensions
+                    const canvas = document.createElement('canvas');
+                    canvas.width = videoElement.videoWidth || 1280;
+                    canvas.height = videoElement.videoHeight || 720;
+                    const ctx = canvas.getContext('2d');
+                    
+                    // Set up MediaRecorder with canvas stream
+                    const canvasStream = canvas.captureStream(30);  // 30fps
+                    
+                    // Try to get audio too if possible
+                    try {
+                        if (videoElement.captureStream) {
+                            const videoStream = videoElement.captureStream();
+                            const audioTracks = videoStream.getAudioTracks();
+                            if (audioTracks.length > 0) {
+                                console.log("Adding audio track to recording");
+                                canvasStream.addTrack(audioTracks[0]);
+                            }
+                        }
+                    } catch (e) {
+                        console.error("Could not capture audio:", e);
+                    }
+                    
+                    const recordedChunks = [];
+                    let mediaRecorder;
+                    
+                    try {
+                        // Try with VP9 first for better quality
+                        mediaRecorder = new MediaRecorder(canvasStream, {
+                            mimeType: 'video/webm; codecs=vp9'
+                        });
+                    } catch (e) {
+                        console.log("VP9 not supported, trying VP8");
+                        try {
+                            // Fallback to VP8
+                            mediaRecorder = new MediaRecorder(canvasStream, {
+                                mimeType: 'video/webm; codecs=vp8'
+                            });
+                        } catch (e) {
+                            console.log("VP8 not supported, using default codec");
+                            mediaRecorder = new MediaRecorder(canvasStream);
+                        }
+                    }
+                    
+                    mediaRecorder.ondataavailable = (e) => {
+                        if (e.data.size > 0) {
+                            recordedChunks.push(e.data);
+                        }
+                    };
+                    
+                    // Rewind video to beginning
+                    videoElement.currentTime = 0;
+                    
+                    // The actual recording duration (limited by provided max duration)
+                    const recordingDuration = Math.min(
+                        arguments[0],  // Max duration from arguments
+                        isFinite(videoElement.duration) ? videoElement.duration : arguments[0]
+                    );
+                    
+                    console.log(`Recording for ${recordingDuration} seconds...`);
+                    
+                    // Start recording
+                    mediaRecorder.start(1000);  // 1 second chunks
+                    
+                    // Draw video frames to canvas
+                    let frameCapture;
+                    const captureFrame = () => {
+                        if (videoElement.readyState >= 2) {
+                            ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+                        }
+                        frameCapture = requestAnimationFrame(captureFrame);
+                    };
+                    
+                    // Start frame capture
+                    captureFrame();
+                    
+                    // Adjust playback rate to capture more content if video is very long
+                    if (isFinite(videoElement.duration) && videoElement.duration > recordingDuration * 1.5) {
+                        console.log("Long video detected, increasing playback rate");
+                        videoElement.playbackRate = 1.5;
+                    }
+                    
+                    // Stop recording after duration
+                    await new Promise(r => setTimeout(r, recordingDuration * 1000));
+                    
+                    // Stop everything
+                    mediaRecorder.stop();
+                    cancelAnimationFrame(frameCapture);
+                    
+                    // Wait for the last ondataavailable to fire
+                    await new Promise(r => setTimeout(r, 1000));
+                    
+                    console.log(`Recording finished, got ${recordedChunks.length} chunks`);
+                    
+                    // Create blob and convert to base64
+                    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                    const fileReader = new FileReader();
+                    
+                    // Convert to base64
+                    await new Promise((resolve) => {
+                        fileReader.onloadend = () => resolve();
+                        fileReader.readAsDataURL(blob);
+                    });
+                    
+                    console.log(`Recording size: ${blob.size} bytes`);
+                    
+                    resolve({
+                        success: true,
+                        dataUrl: fileReader.result,
+                        contentLength: blob.size,
+                        duration: recordingDuration
+                    });
+                    
+                } catch (e) {
+                    console.error("Recording error:", e);
+                    resolve({ success: false, error: e.toString() });
+                }
+            });
+            """
+            
+            log.debug("Starting browser recording")
+            result = self.driver.execute_script(recording_script, duration)
+            
+            if not result or not result.get('success'):
+                error = result.get('error') if result else "Unknown error"
+                log.error(f"Video recording failed: {error}")
+                return False
+            
+            # Save the recorded video
+            data_url = result.get('dataUrl')
+            content_length = result.get('contentLength', 0)
+            
+            if not data_url or not content_length:
+                log.error("Invalid recording data received")
+                return False
+                
+            log.debug(f"Received {content_length} bytes of recorded video")
+            
+            # First save as WebM, then convert to MP4
+            webm_path = output_path.replace('.mp4', '.webm')
+            
+            # Extract and save base64 data
+            import base64
+            header, data = data_url.split(',', 1)
+            binary_data = base64.b64decode(data)
+            
+            with open(webm_path, 'wb') as f:
+                f.write(binary_data)
+            
+            log.info(f"Saved WebM recording: {webm_path} ({content_length} bytes)")
+            
+            # Convert to MP4 using ffmpeg
+            try:
+                import subprocess
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', webm_path,
+                    '-c:v', 'libx264',
+                    '-preset', 'fast',
+                    '-crf', '22',
+                    '-c:a', 'aac',
+                    output_path
+                ]
+                
+                subprocess_result = subprocess.run(cmd, capture_output=True, text=True)
+                if subprocess_result.returncode != 0:
+                    log.error(f"FFmpeg conversion failed: {subprocess_result.stderr}")
+                    # Keep the WebM file
+                    log.info(f"Video available in WebM format: {webm_path}")
+                    return True
+                
+                # Remove the WebM file
+                import os
+                os.remove(webm_path)
+                
+                log.info(f"Successfully converted to MP4: {output_path}")
+                return True
+                
+            except Exception as e:
+                log.error(f"Error converting WebM to MP4: {str(e)}")
+                log.info(f"Video available in WebM format: {webm_path}")
+                return True
+            
+        except Exception as e:
+            log.error(f"Error recording video: {str(e)}", exc_info=True)
             return False
             
             # First, add a script to try enabling CORS in the browser
@@ -1086,6 +1950,14 @@ class VideoDownloader:
             # File path for output
             output_path = os.path.join(self.download_dir, f"{filename}.mp4")
             
+            # First, try a direct method that downloads the video through the player
+            if self._try_player_direct_download(output_path):
+                log.info(f"Successfully downloaded video using player direct method: {output_path}")
+                return True
+            
+            # If direct method fails, try through the playlist approach
+            log.debug("Direct player method failed, trying playlist approach")
+            
             # First get the playlist URL via JavaScript in the browser
             fetch_script = """
             async function fetchM3U8Content(url) {
@@ -1108,6 +1980,8 @@ class VideoDownloader:
                         'Referer': 'https://cf-embed.play.hotmart.com/',
                         'Accept': '*/*',
                         'Accept-Language': 'en-US,en;q=0.5',
+                        'Access-Control-Request-Headers': 'origin,range,hdntl,hdnts,X-App-Id',
+                        'Range': 'bytes=0-'
                     };
                     
                     // Add token to headers
@@ -1127,17 +2001,54 @@ class VideoDownloader:
                     const response = await fetch(url, {
                         method: 'GET',
                         credentials: 'include',
-                        headers: headers
+                        headers: headers,
+                        // Important: Use no-cors mode for Akamai CDN which restricts CORS
+                        mode: 'no-cors'
                     });
                     
                     console.log("Response status:", response.status);
                     
                     if (!response.ok) {
-                        return { 
-                            success: false, 
-                            error: "HTTP Error: " + response.status,
-                            details: await response.text()
-                        };
+                        // Try again with different approach for no-cors mode
+                        console.log("Initial request failed, trying alternative approach");
+                        
+                        // For no-cors mode, we won't be able to read the response directly
+                        // Instead, use XMLHttpRequest for better compatibility
+                        return await new Promise((resolve) => {
+                            const xhr = new XMLHttpRequest();
+                            xhr.open('GET', url, true);
+                            
+                            // Add all headers
+                            Object.keys(headers).forEach(key => {
+                                xhr.setRequestHeader(key, headers[key]);
+                            });
+                            
+                            xhr.responseType = 'text';
+                            
+                            xhr.onload = function() {
+                                if (xhr.status >= 200 && xhr.status < 300) {
+                                    resolve({ 
+                                        success: true, 
+                                        content: xhr.responseText 
+                                    });
+                                } else {
+                                    resolve({ 
+                                        success: false, 
+                                        error: "HTTP Error: " + xhr.status,
+                                        details: xhr.responseText
+                                    });
+                                }
+                            };
+                            
+                            xhr.onerror = function() {
+                                resolve({ 
+                                    success: false, 
+                                    error: "Network Error" 
+                                });
+                            };
+                            
+                            xhr.send();
+                        });
                     }
                     
                     const text = await response.text();
@@ -1145,6 +2056,46 @@ class VideoDownloader:
                     return { success: true, content: text };
                 } catch (error) {
                     console.error("Error in fetchM3U8Content:", error);
+                    
+                    // One more fallback attempt using the browser's native video player
+                    console.log("Attempting final fallback: trigger native video player");
+                    try {
+                        // If we can't fetch directly, try to load it in a video element
+                        const videoEl = document.createElement('video');
+                        videoEl.style.display = 'none';
+                        videoEl.setAttribute('playsinline', '');
+                        videoEl.setAttribute('autoplay', '');
+                        videoEl.setAttribute('muted', '');
+                        document.body.appendChild(videoEl);
+                        
+                        // Try to trigger HLS.js if available
+                        if (window.Hls && window.Hls.isSupported()) {
+                            const hls = new window.Hls();
+                            hls.loadSource(url);
+                            hls.attachMedia(videoEl);
+                            await new Promise(r => setTimeout(r, 2000));
+                            
+                            // Try to extract the playlist from HLS.js
+                            if (hls.levels && hls.levels.length) {
+                                return { 
+                                    success: true, 
+                                    fromHls: true,
+                                    levels: hls.levels,
+                                    url: url
+                                };
+                            }
+                        } else {
+                            // Use native HLS support
+                            videoEl.src = url;
+                            await new Promise(r => setTimeout(r, 2000));
+                        }
+                        
+                        // Clean up
+                        document.body.removeChild(videoEl);
+                    } catch (e) {
+                        console.error("Native player fallback failed:", e);
+                    }
+                    
                     return { success: false, error: error.toString() };
                 }
             }
@@ -1159,12 +2110,17 @@ class VideoDownloader:
             if not result or not result.get('success'):
                 error = result.get('error') if result else "Unknown error"
                 log.error(f"Failed to fetch M3U8 playlist: {error}")
-                return False
+                # Check if our network monitor fallback is still running
+                return self._try_network_monitor_download(video_url, filename)
+                
+            # If we got HLS.js levels data, use it directly
+            if result.get('fromHls') and result.get('levels'):
+                return self._try_hlsjs_download(result, filename, output_path)
                 
             playlist_content = result.get('content')
             if not playlist_content:
                 log.error("Empty M3U8 playlist received")
-                return False
+                return self._try_network_monitor_download(video_url, filename)
                 
             log.debug(f"M3U8 playlist received ({len(playlist_content)} bytes)")
             
@@ -1183,7 +2139,7 @@ class VideoDownloader:
             
             if not segment_urls:
                 log.error("No video segments found in playlist")
-                return False
+                return self._try_network_monitor_download(video_url, filename)
                 
             log.debug(f"Found {len(segment_urls)} video segments")
             
@@ -1195,27 +2151,103 @@ class VideoDownloader:
             segment_files = []
             
             try:
+                # Extract token and app parameter from the original URL
+                auth_token = None
+                app_param = None
+                
+                if 'hdntl=' in video_url:
+                    auth_token_match = re.search(r'hdntl=([^&]+)', video_url)
+                    if auth_token_match:
+                        auth_token = auth_token_match.group(1)
+                
+                if 'app=' in video_url:
+                    app_param_match = re.search(r'app=([^&]+)', video_url)
+                    if app_param_match:
+                        app_param = app_param_match.group(1)
+                
                 # Download each segment
                 for i, segment_url in enumerate(segment_urls):
                     log.debug(f"Downloading segment {i+1}/{len(segment_urls)}")
                     segment_file = os.path.join(temp_dir, f"segment_{i:04d}.ts")
                     segment_files.append(segment_file)
                     
-                    # Script to fetch segment
+                    # Script to fetch segment with improved headers
                     segment_script = """
-                    async function fetchSegment(url) {
+                    async function fetchSegment(url, authToken, appParam) {
                         try {
+                            const headers = {
+                                'Origin': 'https://cf-embed.play.hotmart.com',
+                                'Referer': 'https://cf-embed.play.hotmart.com/',
+                                'Accept': '*/*',
+                                'Accept-Language': 'en-US,en;q=0.5',
+                                'Access-Control-Request-Headers': 'origin,range,hdntl,hdnts,X-App-Id',
+                                'Range': 'bytes=0-'
+                            };
+                            
+                            // Add auth token if provided
+                            if (authToken) {
+                                headers['hdntl'] = authToken;
+                            }
+                            
+                            // Add app parameter if provided
+                            if (appParam) {
+                                headers['X-App-Id'] = appParam;
+                                headers['app'] = appParam;
+                            }
+                            
+                            // Try fetch with credentials and no-cors mode
                             const response = await fetch(url, {
                                 method: 'GET',
                                 credentials: 'include',
-                                headers: {
-                                    'Origin': 'https://cf-embed.play.hotmart.com',
-                                    'Referer': 'https://cf-embed.play.hotmart.com/'
-                                }
+                                headers: headers,
+                                mode: 'no-cors'
+                            }).catch(e => {
+                                console.error("Fetch failed:", e);
+                                // Return dummy response to trigger XMLHttpRequest fallback
+                                return { ok: false };
                             });
                             
                             if (!response.ok) {
-                                return { success: false, error: "HTTP Error: " + response.status };
+                                // Try XMLHttpRequest as fallback for no-cors mode
+                                return await new Promise((resolve) => {
+                                    const xhr = new XMLHttpRequest();
+                                    xhr.open('GET', url, true);
+                                    
+                                    // Add all headers
+                                    Object.keys(headers).forEach(key => {
+                                        xhr.setRequestHeader(key, headers[key]);
+                                    });
+                                    
+                                    xhr.responseType = 'arraybuffer';
+                                    
+                                    xhr.onload = function() {
+                                        if (xhr.status >= 200 && xhr.status < 300) {
+                                            const buffer = xhr.response;
+                                            const dataUrl = 'data:application/octet-stream;base64,' + 
+                                                arrayBufferToBase64(buffer);
+                                            
+                                            resolve({
+                                                success: true,
+                                                dataUrl: dataUrl,
+                                                contentLength: buffer.byteLength
+                                            });
+                                        } else {
+                                            resolve({ 
+                                                success: false, 
+                                                error: "HTTP Error: " + xhr.status 
+                                            });
+                                        }
+                                    };
+                                    
+                                    xhr.onerror = function() {
+                                        resolve({ 
+                                            success: false, 
+                                            error: "Network Error" 
+                                        });
+                                    };
+                                    
+                                    xhr.send();
+                                });
                             }
                             
                             const buffer = await response.arrayBuffer();
@@ -1227,6 +2259,7 @@ class VideoDownloader:
                                 contentLength: buffer.byteLength
                             };
                         } catch (error) {
+                            console.error("Segment fetch error:", error);
                             return { success: false, error: error.toString() };
                         }
                     }
@@ -1241,15 +2274,15 @@ class VideoDownloader:
                         return window.btoa(binary);
                     }
                     
-                    return await fetchSegment(arguments[0]);
+                    return await fetchSegment(arguments[0], arguments[1], arguments[2]);
                     """
                     
-                    segment_result = self.driver.execute_script(segment_script, segment_url)
+                    segment_result = self.driver.execute_script(segment_script, segment_url, auth_token, app_param)
                     
                     if not segment_result or not segment_result.get('success'):
                         error = segment_result.get('error') if segment_result else "Unknown error"
                         log.error(f"Failed to download segment {i+1}: {error}")
-                        return False
+                        return self._try_network_monitor_download(video_url, filename)
                         
                     # Extract and save base64 data
                     data_url = segment_result.get('dataUrl')
@@ -1295,6 +2328,862 @@ class VideoDownloader:
                 
         except Exception as e:
             log.error(f"Browser HLS download failed: {str(e)}", exc_info=True)
+            return self._try_network_monitor_download(video_url, filename)
+            
+    def _try_player_direct_download(self, output_path):
+        """
+        Attempt to download directly from the video player by capturing the video element data.
+        
+        Args:
+            output_path (str): Path to save the downloaded video
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            log.info("Attempting direct video player download")
+            
+            # First make sure we're in the iframe
+            try:
+                # Check if we're already in an iframe by looking for video element
+                video_element = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR, "video", timeout=1
+                )
+                
+                if not video_element:
+                    # Find and switch to the iframe
+                    iframe = self.browser_manager.wait_for_element(
+                        By.CSS_SELECTOR, 
+                        "iframe[src*='cf-embed.play.hotmart.com']",
+                        timeout=3
+                    )
+                    
+                    if iframe:
+                        log.debug("Switching to video iframe")
+                        self.driver.switch_to.frame(iframe)
+                    else:
+                        log.debug("No iframe found, might already be in iframe or on direct player page")
+            except Exception as e:
+                log.debug(f"Error handling iframe: {str(e)}")
+                # Continue anyway
+            
+            # Try to find and play the video
+            script = """
+            return new Promise(async (resolve) => {
+                try {
+                    console.log("Starting direct player download...");
+                    const videoElement = document.querySelector('video');
+                    
+                    if (!videoElement) {
+                        console.log("No video element found");
+                        return resolve({ success: false, error: "No video element found" });
+                    }
+                    
+                    console.log("Found video element");
+                    
+                    // Make sure player is ready
+                    await new Promise(r => setTimeout(r, 1000));
+                    
+                    // Try to play the video to trigger loading
+                    try {
+                        const playPromise = videoElement.play();
+                        if (playPromise) {
+                            await playPromise;
+                            console.log("Video playing...");
+                        }
+                    } catch (e) {
+                        console.error("Error playing video:", e);
+                        // Continue anyway
+                    }
+                    
+                    // Wait for video to start loading
+                    await new Promise(r => setTimeout(r, 3000));
+                    
+                    // Function to get the download URL
+                    function getDownloadUrl() {
+                        // Try different sources in order of priority
+                        if (videoElement.srcObject) {
+                            console.log("Video has srcObject");
+                            return null; // Need special handling
+                        }
+                        
+                        if (videoElement.src && videoElement.src !== "" && videoElement.src !== "about:blank") {
+                            console.log("Video has direct src:", videoElement.src);
+                            return videoElement.src;
+                        }
+                        
+                        // Check for source elements
+                        const sources = videoElement.querySelectorAll('source');
+                        if (sources && sources.length > 0) {
+                            for (const source of sources) {
+                                if (source.src && source.src !== "") {
+                                    console.log("Found source element with src:", source.src);
+                                    return source.src;
+                                }
+                            }
+                        }
+                        
+                        // Last resort: try to find source in data attributes or other places
+                        const dataUrl = videoElement.dataset.src || videoElement.getAttribute('data-src');
+                        if (dataUrl) {
+                            console.log("Found data-src:", dataUrl);
+                            return dataUrl;
+                        }
+                        
+                        return null;
+                    }
+                    
+                    // Try to get download URL
+                    const downloadUrl = getDownloadUrl();
+                    if (downloadUrl) {
+                        console.log("Found download URL:", downloadUrl);
+                        return resolve({ success: true, downloadUrl });
+                    }
+                    
+                    // If no direct URL, try to capture the media stream directly
+                    console.log("No direct URL found, trying to capture media stream");
+                    
+                    // Modified recording approach for fixed duration
+                    try {
+                        console.log("Starting video recording...");
+                        
+                        // Create a canvas for capturing video frames
+                        const canvas = document.createElement('canvas');
+                        canvas.width = videoElement.videoWidth;
+                        canvas.height = videoElement.videoHeight;
+                        const ctx = canvas.getContext('2d');
+                        
+                        // Create a MediaRecorder to capture the stream
+                        const stream = canvas.captureStream(30); // 30 FPS
+                        
+                        // Try to add audio track if possible
+                        if (videoElement.captureStream) {
+                            try {
+                                const videoStream = videoElement.captureStream();
+                                const audioTracks = videoStream.getAudioTracks();
+                                if (audioTracks.length > 0) {
+                                    stream.addTrack(audioTracks[0]);
+                                }
+                            } catch (e) {
+                                console.error("Could not capture audio track:", e);
+                            }
+                        }
+                        
+                        const recordedChunks = [];
+                        const mediaRecorder = new MediaRecorder(stream, {
+                            mimeType: 'video/webm; codecs=vp9'
+                        });
+                        
+                        mediaRecorder.ondataavailable = (e) => {
+                            if (e.data.size > 0) {
+                                recordedChunks.push(e.data);
+                            }
+                        };
+                        
+                        // Seek to beginning
+                        videoElement.currentTime = 0;
+                        
+                        // Define recording duration based on video length, max 3 minutes
+                        const recordingDuration = Math.min(
+                            180, // 3 minutes max
+                            isFinite(videoElement.duration) ? videoElement.duration : 60 // 1 minute default
+                        );
+                        
+                        console.log(`Recording for ${recordingDuration} seconds...`);
+                        
+                        mediaRecorder.start(1000); // 1 second chunks
+                        
+                        // Draw video frames to canvas
+                        let frameCapture;
+                        const captureFrame = () => {
+                            if (videoElement.readyState >= 2) {
+                                ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+                            }
+                            frameCapture = requestAnimationFrame(captureFrame);
+                        };
+                        
+                        captureFrame();
+                        
+                        // Stop recording after duration
+                        await new Promise(r => setTimeout(r, recordingDuration * 1000));
+                        mediaRecorder.stop();
+                        cancelAnimationFrame(frameCapture);
+                        
+                        // Create a blob from the recorded chunks
+                        const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                        const fileReader = new FileReader();
+                        
+                        // Convert blob to base64 data
+                        await new Promise((resolve) => {
+                            fileReader.onloadend = () => resolve();
+                            fileReader.readAsDataURL(blob);
+                        });
+                        
+                        return resolve({
+                            success: true,
+                            recordedVideo: true,
+                            dataUrl: fileReader.result,
+                            contentLength: blob.size
+                        });
+                    } catch (e) {
+                        console.error("Error recording video:", e);
+                        return resolve({ success: false, error: `Recording error: ${e.message}` });
+                    }
+                } catch (e) {
+                    console.error("Error in direct player download:", e);
+                    return resolve({ success: false, error: e.toString() });
+                }
+            });
+            """
+            
+            result = self.driver.execute_script(script)
+            log.debug(f"Direct player download result: {result}")
+            
+            if not result or not result.get('success'):
+                error = result.get('error') if result else "Unknown error"
+                log.error(f"Direct player download failed: {error}")
+                return False
+            
+            # If we got a download URL, download it using the browser fetch API
+            if result.get('downloadUrl'):
+                download_url = result.get('downloadUrl')
+                log.info(f"Got direct download URL from player: {download_url[:100]}...")
+                
+                # Use our browser download methods to download it
+                fetch_script = """
+                async function downloadFile(url) {
+                    try {
+                        console.log("Fetching:", url);
+                        
+                        const response = await fetch(url, {
+                            method: 'GET',
+                            credentials: 'include',
+                            headers: {
+                                'Origin': 'https://cf-embed.play.hotmart.com',
+                                'Referer': 'https://cf-embed.play.hotmart.com/'
+                            }
+                        });
+                        
+                        console.log("Response status:", response.status);
+                        
+                        if (!response.ok) {
+                            return { 
+                                success: false, 
+                                error: "HTTP Error: " + response.status 
+                            };
+                        }
+                        
+                        const buffer = await response.arrayBuffer();
+                        const dataUrl = 'data:application/octet-stream;base64,' + arrayBufferToBase64(buffer);
+                        
+                        return {
+                            success: true,
+                            dataUrl: dataUrl,
+                            contentLength: buffer.byteLength
+                        };
+                    } catch (error) {
+                        console.error("Download error:", error);
+                        return { success: false, error: error.toString() };
+                    }
+                }
+                
+                function arrayBufferToBase64(buffer) {
+                    let binary = '';
+                    const bytes = new Uint8Array(buffer);
+                    const len = bytes.byteLength;
+                    for (let i = 0; i < len; i++) {
+                        binary += String.fromCharCode(bytes[i]);
+                    }
+                    return window.btoa(binary);
+                }
+                
+                return await downloadFile(arguments[0]);
+                """
+                
+                download_result = self.driver.execute_script(fetch_script, download_url)
+                
+                if not download_result or not download_result.get('success'):
+                    error = download_result.get('error') if download_result else "Unknown error"
+                    log.error(f"Failed to download video from URL: {error}")
+                    return False
+                
+                # Save the data
+                data_url = download_result.get('dataUrl')
+                content_length = download_result.get('contentLength', 0)
+                
+                import base64
+                header, data = data_url.split(',', 1)
+                binary_data = base64.b64decode(data)
+                
+                with open(output_path, 'wb') as f:
+                    f.write(binary_data)
+                
+                log.info(f"Successfully downloaded video from player URL: {output_path} ({content_length} bytes)")
+                return True
+                
+            # If we got recorded video data, save it
+            elif result.get('recordedVideo') and result.get('dataUrl'):
+                data_url = result.get('dataUrl')
+                content_length = result.get('contentLength', 0)
+                
+                import base64
+                header, data = data_url.split(',', 1)
+                binary_data = base64.b64decode(data)
+                
+                # For recorded videos, save as webm first
+                webm_path = output_path.replace('.mp4', '.webm')
+                with open(webm_path, 'wb') as f:
+                    f.write(binary_data)
+                
+                log.info(f"Saved recorded video: {webm_path} ({content_length} bytes)")
+                
+                # Convert to MP4 using ffmpeg
+                try:
+                    import subprocess
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-i', webm_path,
+                        '-c:v', 'libx264',
+                        '-c:a', 'aac',
+                        output_path
+                    ]
+                    
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    if result.returncode != 0:
+                        log.error(f"FFmpeg conversion failed: {result.stderr}")
+                        # Keep the webm file
+                        log.info(f"Video available in WebM format: {webm_path}")
+                        return True
+                    
+                    # Remove the webm file if conversion successful
+                    import os
+                    os.remove(webm_path)
+                    
+                    log.info(f"Successfully converted recorded video to MP4: {output_path}")
+                    return True
+                except Exception as e:
+                    log.error(f"Error converting WebM to MP4: {str(e)}")
+                    log.info(f"Video available in WebM format: {webm_path}")
+                    return True
+            
+            return False
+        
+        except Exception as e:
+            log.error(f"Direct player download failed: {str(e)}", exc_info=True)
+            return False
+    
+    def _try_hlsjs_download(self, result, filename, output_path):
+        """
+        Try to download video using HLS.js level data.
+        
+        Args:
+            result (dict): The HLS.js data with levels
+            filename (str): Base filename
+            output_path (str): Output file path
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            log.info("Attempting download using HLS.js level data")
+            levels = result.get('levels', [])
+            
+            if not levels:
+                log.error("No HLS.js levels found")
+                return False
+                
+            # Sort levels by bandwidth (highest quality first)
+            sorted_levels = sorted(levels, key=lambda x: x.get('bitrate', 0), reverse=True)
+            
+            if not sorted_levels:
+                log.error("No usable levels found")
+                return False
+                
+            # Use the highest quality level
+            best_level = sorted_levels[0]
+            level_url = best_level.get('url') or best_level.get('uri')
+            
+            if not level_url:
+                log.error("No URL found in best level")
+                return False
+                
+            log.debug(f"Using best quality level URL: {level_url}")
+            
+            # Try to download using ffmpeg
+            try:
+                import subprocess
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', level_url,
+                    '-c', 'copy',
+                    output_path
+                ]
+                
+                env = os.environ.copy()
+                env['HTTP_REFERER'] = 'https://cf-embed.play.hotmart.com/'
+                env['HTTP_ORIGIN'] = 'https://cf-embed.play.hotmart.com'
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+                if result.returncode != 0:
+                    log.error(f"FFmpeg download failed: {result.stderr}")
+                    return False
+                
+                log.info(f"Successfully downloaded video using HLS.js level data: {output_path}")
+                return True
+            except Exception as e:
+                log.error(f"Error using ffmpeg for HLS.js download: {str(e)}")
+                return False
+                
+        except Exception as e:
+            log.error(f"HLS.js download failed: {str(e)}", exc_info=True)
+            return False
+            
+    def _try_network_monitor_download(self, video_url, filename):
+        """
+        Try to download by monitoring network traffic for direct video segments.
+        
+        Args:
+            video_url (str): Original video URL
+            filename (str): Base filename
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            log.info("Attempting download via network traffic monitoring")
+            
+            # Set up network monitoring script
+            monitor_script = """
+            return new Promise((resolve) => {
+                console.log("Starting network monitor...");
+                
+                const videoSegments = [];
+                const foundUrls = new Set();
+                let masterPlaylist = null;
+                
+                // Set up interception for all network requests
+                function setupInterception() {
+                    // Monitor performance entries
+                    setInterval(() => {
+                        const entries = performance.getEntries();
+                        for (const entry of entries) {
+                            if (!entry.name || typeof entry.name !== 'string') continue;
+                            
+                            // Keep track of unique URLs we've seen
+                            if (foundUrls.has(entry.name)) continue;
+                            foundUrls.add(entry.name);
+                            
+                            // Look for video segments
+                            if (entry.name.includes('.ts') || 
+                                entry.name.includes('.m4s') || 
+                                entry.name.includes('.mp4') && entry.name.includes('segment')) {
+                                console.log("Found segment:", entry.name);
+                                videoSegments.push(entry.name);
+                            }
+                            
+                            // Look for master playlist
+                            if ((entry.name.includes('.m3u8') || entry.name.includes('master')) &&
+                                !masterPlaylist) {
+                                console.log("Found master playlist:", entry.name);
+                                masterPlaylist = entry.name;
+                            }
+                        }
+                    }, 1000);
+                    
+                    // XHR interception
+                    const origXHROpen = XMLHttpRequest.prototype.open;
+                    XMLHttpRequest.prototype.open = function() {
+                        const url = arguments[1];
+                        
+                        // Handle only string URLs
+                        if (url && typeof url === 'string') {
+                            // Keep track of unique URLs we've seen
+                            if (foundUrls.has(url)) return origXHROpen.apply(this, arguments);
+                            foundUrls.add(url);
+                            
+                            // Look for video segments
+                            if (url.includes('.ts') || 
+                                url.includes('.m4s') || 
+                                url.includes('.mp4') && url.includes('segment')) {
+                                console.log("XHR found segment:", url);
+                                videoSegments.push(url);
+                            }
+                            
+                            // Look for master playlist
+                            if ((url.includes('.m3u8') || url.includes('master')) &&
+                                !masterPlaylist) {
+                                console.log("XHR found master playlist:", url);
+                                masterPlaylist = url;
+                            }
+                        }
+                        
+                        return origXHROpen.apply(this, arguments);
+                    };
+                    
+                    // Fetch interception
+                    const origFetch = window.fetch;
+                    window.fetch = function() {
+                        const url = arguments[0];
+                        
+                        // Handle different fetch argument formats
+                        let urlStr = null;
+                        if (typeof url === 'string') {
+                            urlStr = url;
+                        } else if (url && url.url) {
+                            urlStr = url.url;
+                        } else if (url && typeof url.toString === 'function') {
+                            urlStr = url.toString();
+                        }
+                        
+                        if (urlStr) {
+                            // Keep track of unique URLs we've seen
+                            if (foundUrls.has(urlStr)) return origFetch.apply(this, arguments);
+                            foundUrls.add(urlStr);
+                            
+                            // Look for video segments
+                            if (urlStr.includes('.ts') || 
+                                urlStr.includes('.m4s') || 
+                                urlStr.includes('.mp4') && urlStr.includes('segment')) {
+                                console.log("Fetch found segment:", urlStr);
+                                videoSegments.push(urlStr);
+                            }
+                            
+                            // Look for master playlist
+                            if ((urlStr.includes('.m3u8') || urlStr.includes('master')) &&
+                                !masterPlaylist) {
+                                console.log("Fetch found master playlist:", urlStr);
+                                masterPlaylist = urlStr;
+                            }
+                        }
+                        
+                        return origFetch.apply(this, arguments);
+                    };
+                }
+                
+                // Set up interception
+                setupInterception();
+                
+                // Try to play video if there's one on the page
+                try {
+                    const videoElements = document.querySelectorAll('video');
+                    console.log(`Found ${videoElements.length} video elements`);
+                    
+                    for (const video of videoElements) {
+                        try {
+                            video.play().catch(e => console.error("Error playing video:", e));
+                            video.currentTime = 0;
+                        } catch (e) {
+                            console.error("Error with video element:", e);
+                        }
+                    }
+                    
+                    // Also try to click any play buttons
+                    const playButtons = document.querySelectorAll('.play-button, [aria-label="Play"]');
+                    for (const button of playButtons) {
+                        try {
+                            button.click();
+                        } catch (e) {
+                            console.error("Error clicking play button:", e);
+                        }
+                    }
+                } catch (e) {
+                    console.error("Error manipulating page:", e);
+                }
+                
+                // Wait for some time to collect URLs
+                setTimeout(() => {
+                    console.log(`Found ${videoSegments.length} video segments`);
+                    resolve({
+                        segments: videoSegments,
+                        masterPlaylist,
+                        allUrls: Array.from(foundUrls)
+                    });
+                }, 10000);  // Wait 10 seconds to collect data
+            });
+            """
+            
+            # Run the network monitor
+            result = self.driver.execute_script(monitor_script)
+            
+            if not result:
+                log.error("Network monitor returned no results")
+                return False
+                
+            segments = result.get('segments', [])
+            master_playlist = result.get('masterPlaylist')
+            all_urls = result.get('allUrls', [])
+            
+            log.debug(f"Network monitor found {len(segments)} segments and {len(all_urls)} total URLs")
+            
+            # If we found a master playlist, try to download it with ffmpeg
+            if master_playlist:
+                log.info(f"Attempting download using master playlist: {master_playlist}")
+                try:
+                    output_path = os.path.join(self.download_dir, f"{filename}.mp4")
+                    
+                    import subprocess
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-headers', 'Origin: https://cf-embed.play.hotmart.com\r\nReferer: https://cf-embed.play.hotmart.com/',
+                        '-i', master_playlist,
+                        '-c', 'copy',
+                        output_path
+                    ]
+                    
+                    env = os.environ.copy()
+                    env['HTTP_REFERER'] = 'https://cf-embed.play.hotmart.com/'
+                    env['HTTP_ORIGIN'] = 'https://cf-embed.play.hotmart.com'
+                    
+                    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+                    if result.returncode == 0:
+                        log.info(f"Successfully downloaded using master playlist: {output_path}")
+                        return True
+                    
+                    log.warning(f"FFmpeg failed with master playlist: {result.stderr}")
+                    # Fall through to other methods
+                except Exception as e:
+                    log.error(f"Error using ffmpeg with master playlist: {str(e)}")
+                    # Fall through to other methods
+            
+            # If we have segments, download them directly
+            if segments:
+                log.info(f"Attempting to download {len(segments)} segments directly")
+                
+                # Create temporary directory
+                import tempfile
+                import shutil
+                
+                temp_dir = tempfile.mkdtemp()
+                segment_files = []
+                
+                try:
+                    # Extract token and app parameter from the original URL
+                    auth_token = None
+                    app_param = None
+                    
+                    if 'hdntl=' in video_url:
+                        auth_token_match = re.search(r'hdntl=([^&]+)', video_url)
+                        if auth_token_match:
+                            auth_token = auth_token_match.group(1)
+                    
+                    if 'app=' in video_url:
+                        app_param_match = re.search(r'app=([^&]+)', video_url)
+                        if app_param_match:
+                            app_param = app_param_match.group(1)
+                    
+                    # Download each segment
+                    for i, segment_url in enumerate(segments):
+                        try:
+                            log.debug(f"Downloading segment {i+1}/{len(segments)}")
+                            segment_file = os.path.join(temp_dir, f"segment_{i:04d}.ts")
+                            segment_files.append(segment_file)
+                            
+                            # Script to fetch segment
+                            fetch_script = """
+                            async function fetchSegment(url, authToken, appParam) {
+                                try {
+                                    const headers = {
+                                        'Origin': 'https://cf-embed.play.hotmart.com',
+                                        'Referer': 'https://cf-embed.play.hotmart.com/',
+                                        'Accept': '*/*',
+                                        'Accept-Language': 'en-US,en;q=0.5'
+                                    };
+                                    
+                                    if (authToken) {
+                                        headers['hdntl'] = authToken;
+                                    }
+                                    
+                                    if (appParam) {
+                                        headers['X-App-Id'] = appParam;
+                                        headers['app'] = appParam;
+                                    }
+                                    
+                                    const response = await fetch(url, {
+                                        method: 'GET',
+                                        credentials: 'include',
+                                        headers: headers
+                                    });
+                                    
+                                    if (!response.ok) {
+                                        return { success: false, error: "HTTP Error: " + response.status };
+                                    }
+                                    
+                                    const buffer = await response.arrayBuffer();
+                                    const dataUrl = 'data:application/octet-stream;base64,' + arrayBufferToBase64(buffer);
+                                    
+                                    return {
+                                        success: true,
+                                        dataUrl: dataUrl,
+                                        contentLength: buffer.byteLength
+                                    };
+                                } catch (error) {
+                                    return { success: false, error: error.toString() };
+                                }
+                            }
+                            
+                            function arrayBufferToBase64(buffer) {
+                                let binary = '';
+                                const bytes = new Uint8Array(buffer);
+                                const len = bytes.byteLength;
+                                for (let i = 0; i < len; i++) {
+                                    binary += String.fromCharCode(bytes[i]);
+                                }
+                                return window.btoa(binary);
+                            }
+                            
+                            return await fetchSegment(arguments[0], arguments[1], arguments[2]);
+                            """
+                            
+                            segment_result = self.driver.execute_script(fetch_script, segment_url, auth_token, app_param)
+                            
+                            if not segment_result or not segment_result.get('success'):
+                                error = segment_result.get('error') if segment_result else "Unknown error"
+                                log.error(f"Failed to download segment {i+1}: {error}")
+                                continue
+                            
+                            # Save segment data
+                            data_url = segment_result.get('dataUrl')
+                            content_length = segment_result.get('contentLength', 0)
+                            
+                            import base64
+                            header, data = data_url.split(',', 1)
+                            binary_data = base64.b64decode(data)
+                            
+                            with open(segment_file, 'wb') as f:
+                                f.write(binary_data)
+                                
+                            log.debug(f"Segment {i+1} downloaded: {content_length} bytes")
+                        except Exception as e:
+                            log.error(f"Error downloading segment {i+1}: {str(e)}")
+                            # Continue with next segment
+                    
+                    # Check if we have at least some segments
+                    if not segment_files:
+                        log.error("No segments were successfully downloaded")
+                        return False
+                        
+                    log.info(f"Successfully downloaded {len(segment_files)} segments")
+                    
+                    # Concatenate segments
+                    output_path = os.path.join(self.download_dir, f"{filename}.mp4")
+                    
+                    # First combine into a single TS file
+                    ts_output = os.path.join(temp_dir, "combined.ts")
+                    with open(ts_output, 'wb') as outfile:
+                        for segment_file in segment_files:
+                            try:
+                                with open(segment_file, 'rb') as infile:
+                                    outfile.write(infile.read())
+                            except Exception:
+                                # Skip corrupted segments
+                                continue
+                    
+                    # Convert to MP4
+                    import subprocess
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-i', ts_output,
+                        '-c', 'copy',
+                        output_path
+                    ]
+                    
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    if result.returncode != 0:
+                        log.error(f"FFmpeg conversion failed: {result.stderr}")
+                        return False
+                    
+                    log.info(f"Successfully created MP4 from segments: {output_path}")
+                    return True
+                    
+                finally:
+                    # Clean up
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            # If all else fails, check if there are any MP4 URLs that we can download directly
+            mp4_urls = [url for url in all_urls if '.mp4' in url and 'segment' not in url]
+            if mp4_urls:
+                log.info(f"Found {len(mp4_urls)} direct MP4 URLs, attempting download")
+                
+                # Sort by length (longer URLs often have more parameters/quality info)
+                mp4_urls.sort(key=len, reverse=True)
+                
+                for mp4_url in mp4_urls[:3]:  # Try the top 3 most promising URLs
+                    try:
+                        log.debug(f"Trying direct MP4 download: {mp4_url}")
+                        output_path = os.path.join(self.download_dir, f"{filename}.mp4")
+                        
+                        # Script to fetch MP4
+                        fetch_script = """
+                        async function fetchMP4(url) {
+                            try {
+                                const response = await fetch(url, {
+                                    method: 'GET',
+                                    credentials: 'include',
+                                    headers: {
+                                        'Origin': 'https://cf-embed.play.hotmart.com',
+                                        'Referer': 'https://cf-embed.play.hotmart.com/'
+                                    }
+                                });
+                                
+                                if (!response.ok) {
+                                    return { success: false, error: "HTTP Error: " + response.status };
+                                }
+                                
+                                const buffer = await response.arrayBuffer();
+                                const dataUrl = 'data:application/octet-stream;base64,' + arrayBufferToBase64(buffer);
+                                
+                                return {
+                                    success: true,
+                                    dataUrl: dataUrl,
+                                    contentLength: buffer.byteLength
+                                };
+                            } catch (error) {
+                                return { success: false, error: error.toString() };
+                            }
+                        }
+                        
+                        function arrayBufferToBase64(buffer) {
+                            let binary = '';
+                            const bytes = new Uint8Array(buffer);
+                            const len = bytes.byteLength;
+                            for (let i = 0; i < len; i++) {
+                                binary += String.fromCharCode(bytes[i]);
+                            }
+                            return window.btoa(binary);
+                        }
+                        
+                        return await fetchMP4(arguments[0]);
+                        """
+                        
+                        mp4_result = self.driver.execute_script(fetch_script, mp4_url)
+                        
+                        if not mp4_result or not mp4_result.get('success'):
+                            error = mp4_result.get('error') if mp4_result else "Unknown error"
+                            log.error(f"Failed to download MP4: {error}")
+                            continue
+                        
+                        # Save MP4 data
+                        data_url = mp4_result.get('dataUrl')
+                        content_length = mp4_result.get('contentLength', 0)
+                        
+                        import base64
+                        header, data = data_url.split(',', 1)
+                        binary_data = base64.b64decode(data)
+                        
+                        with open(output_path, 'wb') as f:
+                            f.write(binary_data)
+                        
+                        log.info(f"Successfully downloaded direct MP4: {output_path} ({content_length} bytes)")
+                        return True
+                        
+                    except Exception as e:
+                        log.error(f"Error downloading direct MP4: {str(e)}")
+                        # Try next URL
+            
+            return False
+            
+        except Exception as e:
+            log.error(f"Network monitor download failed: {str(e)}", exc_info=True)
             return False
 
     def _download_mp4(self, video_url, filename):

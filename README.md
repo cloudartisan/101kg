@@ -2,7 +2,7 @@
 
 ![Tests](https://github.com/cloudartisan/101kg/workflows/Python%20Tests/badge.svg)
 
-This repository contains Python modules to automate the login, extraction, and download of videos from Hotmart's 101 Karate Games platform.
+This repository contains Python modules to automate the login, extraction, and download of videos from Hotmart's 101 Karate Games platform. For personal use only, of course. It requires a paid login.
 
 ## Features
 - Automates login to Hotmart
@@ -35,26 +35,63 @@ This repository contains Python modules to automate the login, extraction, and d
    ```
 
 ## Usage
-1. **Run the script with your login credentials**:
+1. **First Time Run** (creates a config file with your credentials):
    ```sh
-   ./101kg.py --email your_email@example.com --password your_password
+   python 101kg.py
    ```
+   This will prompt for your email and password and store them securely in `config.json`.
 
-   Or if you prefer using python directly:
+2. **Run with Command Line Credentials** (alternative to config file):
    ```sh
    python 101kg.py --email your_email@example.com --password your_password
    ```
 
-2. **Downloaded videos** will be saved in the `videos/` directory.
+3. **Downloaded videos** will be saved in the `videos/` directory.
 
 ### Command Line Options
 
-- `--email`: Your Hotmart email/username (required)
-- `--password`: Your Hotmart password (required)
+#### Authentication Options:
+- `--email`: Your Hotmart email/username
+- `--password`: Your Hotmart password
+- `--config`: Path to config file with credentials (default: config.json in script directory)
+
+#### Logging Options:
 - `--log-level`: Logging level - debug, info, warning, error (default: info)
 - `--no-log-file`: Disable logging to file
 - `--verbose`: Use the same log level for console as for the log file
 - `--headless`: Run browser in headless mode
+
+#### Download Selection Options:
+- `--list`: List available videos without downloading anything
+- `--single NAME_OR_NUMBER`: Download a specific video by name or index number
+- `--url DIRECT_URL`: Download from a direct video URL
+- `--output FILENAME`: Specify output filename for downloads
+- `--indexes "1,3,5"`: Download specific videos by index numbers (comma-separated list)
+
+### Example Commands
+
+```sh
+# List all available videos
+python 101kg.py --list
+
+# Download a specific video by name (substring match, case-insensitive)
+python 101kg.py --single "Clock Game"
+
+# Download a specific video by index number
+python 101kg.py --single 1
+
+# Download from a direct URL
+python 101kg.py --url "https://vod-akm.play.hotmart.com/video/..." --output "clock_game"
+
+# Download multiple specific videos by index
+python 101kg.py --indexes "1,3,5"
+
+# Enable debug logging
+python 101kg.py --log-level debug
+
+# Run in headless mode
+python 101kg.py --headless
+```
 
 ## Project Structure
 - `101kg.py` - Main entry point script
@@ -98,6 +135,32 @@ pytest -m "not slow"
 - If login fails, Hotmart may have changed its authentication flow, requiring script adjustments.
 - For cookie popup issues, the script includes automatic handling - if this fails, please report the issue.
 - Run with `--log-level debug` for detailed logs to help troubleshoot issues.
+
+### Advanced Debugging
+If you encounter download issues with a specific video:
+
+1. First list the available videos:
+   ```sh
+   python 101kg.py --list
+   ```
+   Note the index of the problematic video.
+
+2. Try downloading it directly:
+   ```sh
+   python 101kg.py --single 3 --log-level debug
+   ```
+
+3. If you have a specific URL to test:
+   ```sh
+   python 101kg.py --url "https://vod-akm.play.hotmart.com/video/..." --output "test_video" --log-level debug
+   ```
+
+4. The script will attempt multiple download methods in sequence:
+   - Helper approach (mimics browser download helper extensions)
+   - Direct page navigation and video extraction
+   - Browser-based download with authenticated session
+   - Standard HTTP methods with token authentication
+   - Direct video recording via browser (as last resort)
 
 ## License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
