@@ -563,6 +563,14 @@ class VideoDownloader:
         try:
             log.info(f"Attempting browser-based download for {filename}")
             
+            # First try a direct navigation approach by loading the embed page and playing the video
+            if self._try_direct_navigation_download(filename):
+                log.info("Successfully downloaded via direct browser navigation")
+                return True
+            
+            # If direct navigation fails, try fetch API approach
+            log.debug(f"Direct navigation download failed, trying fetch API approach for {video_url[:100]}...")
+            
             # First, load the video URL in the browser to ensure we're authenticated
             log.debug(f"Loading video URL in browser: {video_url[:100]}...")
             self.driver.get(video_url)
@@ -572,26 +580,431 @@ class VideoDownloader:
             if '.m3u8' in video_url or '/hls/' in video_url:
                 return self._try_browser_hls_download(video_url, filename)
             
-            # For direct MP4 downloads, we can use fetch API
+            # For direct MP4 downloads, we can use fetch API approach
             file_path = os.path.join(self.download_dir, f"{filename}.mp4")
+            
+            # The rest of this method continues below with the fetch API code
+            # First, add a script to try enabling CORS in the browser
+            cors_script = """
+            // Add CORS headers to requests via Service Worker if possible
+            try {
+                if ('serviceWorker' in navigator) {
+                    console.log("ServiceWorker is supported, attempting to intercept requests");
+                    
+                    // Unregister any existing service workers
+                    navigator.serviceWorker.getRegistrations().then(registrations => {
+                        registrations.forEach(registration => {
+                            registration.unregister();
+                            console.log('ServiceWorker unregistered');
+                        });
+                    });
+                }
+            } catch (e) {
+                console.error("Error setting up service worker:", e);
+            }
+            
+            // Extract current origin for debugging
+            return window.location.origin;
+            """
+            
+            # Try to set up CORS handling
+            origin = self.driver.execute_script(cors_script)
+            log.debug(f"Running in origin context: {origin}")
             
             # Use JavaScript fetch API to download the video through the browser session
             script = """
             async function downloadFile(url, filePath) {
                 try {
                     console.log("Fetching:", url);
+                    
+                    // Extract app parameter if exists
+                    const appParam = url.includes('app=') ? 
+                        url.split('app=')[1].split('&')[0] : null;
+
+                    console.log("App parameter:", appParam);
+                    
+                    // Extract token
+                    const tokenMatch = url.match(/hdntl=([^&]+)/);
+                    const token = tokenMatch ? tokenMatch[1] : null;
+                    console.log("Token found:", token ? token.substring(0, 20) + "..." : "none");
+                    
+                    const headers = {
+                        'Origin': 'https://cf-embed.play.hotmart.com',
+                        'Referer': 'https://cf-embed.play.hotmart.com/',
+                        'Accept': '*/*',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                    };
+                    
+                    // Add token to headers
+                    if (token) {
+                        headers['hdntl'] = token;
+                    }
+                    
+                    // Add app parameter if found
+                    if (appParam) {
+                        headers['X-App-Id'] = appParam;
+                        headers['app'] = appParam;
+                    }
+                    
+                    // Log the actual request we're about to make
+                    console.log("Making request with headers:", JSON.stringify(headers));
+                    
                     const response = await fetch(url, {
                         method: 'GET',
                         credentials: 'include',
-                        headers: {
-                            'Origin': 'https://cf-embed.play.hotmart.com',
-                            'Referer': 'https://cf-embed.play.hotmart.com/'
-                        }
+                        headers: headers
                     });
                     
+                    console.log("Response status:", response.status, response.statusText);
+                    console.log("Response headers:", [...response.headers.entries()]);
+                    
                     if (!response.ok) {
-                        console.error("Error fetching file:", response.status, response.statusText);
-                        return { success: false, error: "HTTP Error: " + response.status };
+                        const errorText = await response.text();
+                        console.error("Error response body:", errorText);
+                        return { 
+                            success: false, 
+                            error: "HTTP Error: " + response.status,
+                            details: errorText
+                        };
+                    }
+                    
+                    console.log("Response received, getting array buffer...");
+                    const buffer = await response.arrayBuffer();
+                    const dataUrl = 'data:application/octet-stream;base64,' + arrayBufferToBase64(buffer);
+                    
+                    return {
+                        success: true,
+                        dataUrl: dataUrl,
+                        contentType: response.headers.get('Content-Type'),
+                        contentLength: buffer.byteLength
+                    };
+                } catch (error) {
+                    console.error("Download error:", error);
+                    return { success: false, error: error.toString() };
+                }
+            }
+            
+            function arrayBufferToBase64(buffer) {
+                let binary = '';
+                const bytes = new Uint8Array(buffer);
+                const len = bytes.byteLength;
+                for (let i = 0; i < len; i++) {
+                    binary += String.fromCharCode(bytes[i]);
+                }
+                return window.btoa(binary);
+            }
+            
+            return await downloadFile(arguments[0], arguments[1]);
+            """
+            
+            log.debug("Executing JavaScript download script")
+            result = self.driver.execute_script(script, video_url, file_path)
+            
+            if not result or not result.get('success'):
+                error = result.get('error') if result else "Unknown error"
+                log.error(f"Browser download failed: {error}")
+                return False
+                
+            # Save the base64 data to a file
+            data_url = result.get('dataUrl')
+            content_length = result.get('contentLength', 0)
+            
+            if not data_url or not content_length:
+                log.error("Invalid data received from browser")
+                return False
+                
+            log.debug(f"Received {content_length} bytes from browser, saving to {file_path}")
+            
+            # Extract and save base64 data
+            import base64
+            header, data = data_url.split(',', 1)
+            binary_data = base64.b64decode(data)
+            
+            with open(file_path, 'wb') as f:
+                f.write(binary_data)
+                
+            log.info(f"Browser download completed: {file_path} ({content_length} bytes)")
+            return True
+            
+        except Exception as e:
+            log.error(f"Browser download failed: {str(e)}", exc_info=True)
+            return False
+            
+    def _try_direct_navigation_download(self, filename):
+        """
+        Try to download a video by directly navigating to the lesson page and
+        clicking play in the iframe, then capturing the network traffic.
+        
+        Args:
+            filename (str): Filename to save the video as
+            
+        Returns:
+            bool: True if download successful, False otherwise
+        """
+        try:
+            log.info(f"Attempting direct navigation download for {filename}")
+            
+            # 1. Get current lesson URL since we're already on the lessons page
+            current_url = self.driver.current_url
+            log.debug(f"Currently on page: {current_url}")
+            
+            # 2. Find the iframe and switch to it
+            try:
+                iframe = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR, 
+                    "iframe[src*='cf-embed.play.hotmart.com']"
+                )
+                
+                if not iframe:
+                    log.error("Could not find video iframe on lesson page")
+                    return False
+                
+                # Switch to iframe
+                self.driver.switch_to.frame(iframe)
+                log.debug("Switched to video iframe")
+                
+                # Wait for video player to load
+                time.sleep(2)
+                
+                # 3. Try to find and click the play button
+                play_button = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR, 
+                    ".play-button, .vjs-big-play-button, .video-player button, [aria-label='Play']",
+                    timeout=5
+                )
+                
+                if play_button:
+                    log.debug("Found play button, clicking it")
+                    self.driver.execute_script("arguments[0].click();", play_button)
+                    
+                    # Give video time to start playing
+                    time.sleep(5)
+                    
+                    # 4. Capture the video source
+                    video_source_script = """
+                    try {
+                        // Try different ways to find video element
+                        const videoElement = document.querySelector('video');
+                        if (videoElement) {
+                            console.log("Found video element");
+                            return videoElement.currentSrc || videoElement.src;
+                        } else {
+                            console.log("No video element found");
+                            return null;
+                        }
+                    } catch (e) {
+                        console.error("Error getting video source:", e);
+                        return null;
+                    }
+                    """
+                    
+                    video_src = self.driver.execute_script(video_source_script)
+                    
+                    if video_src:
+                        log.info(f"Found video source in player: {video_src[:100]}...")
+                        
+                        # Download the video using the fetch API approach
+                        file_path = os.path.join(self.download_dir, f"{filename}.mp4")
+                        
+                        # Use the same fetch API script we use in _try_browser_download
+                        download_script = """
+                        async function downloadFile(url, filePath) {
+                            try {
+                                console.log("Fetching video from player source:", url);
+                                
+                                // Extract actual URL from blob URL if needed
+                                const actualUrl = url.startsWith('blob:') ? 
+                                    document.querySelector('video').querySelector('source')?.src || url : url;
+                                    
+                                console.log("Actual URL to fetch:", actualUrl);
+                                
+                                const response = await fetch(actualUrl, {
+                                    method: 'GET',
+                                    credentials: 'include'
+                                });
+                                
+                                console.log("Response status:", response.status, response.statusText);
+                                
+                                if (!response.ok) {
+                                    const errorText = await response.text();
+                                    console.error("Error response body:", errorText);
+                                    return { 
+                                        success: false, 
+                                        error: "HTTP Error: " + response.status,
+                                        details: errorText
+                                    };
+                                }
+                                
+                                console.log("Response received, getting array buffer...");
+                                const buffer = await response.arrayBuffer();
+                                const dataUrl = 'data:application/octet-stream;base64,' + arrayBufferToBase64(buffer);
+                                
+                                return {
+                                    success: true,
+                                    dataUrl: dataUrl,
+                                    contentType: response.headers.get('Content-Type'),
+                                    contentLength: buffer.byteLength
+                                };
+                            } catch (error) {
+                                console.error("Download error:", error);
+                                return { success: false, error: error.toString() };
+                            }
+                        }
+                        
+                        function arrayBufferToBase64(buffer) {
+                            let binary = '';
+                            const bytes = new Uint8Array(buffer);
+                            const len = bytes.byteLength;
+                            for (let i = 0; i < len; i++) {
+                                binary += String.fromCharCode(bytes[i]);
+                            }
+                            return window.btoa(binary);
+                        }
+                        
+                        return await downloadFile(arguments[0], arguments[1]);
+                        """
+                        
+                        log.debug("Executing JavaScript download script for player source")
+                        result = self.driver.execute_script(download_script, video_src, file_path)
+                        
+                        if not result or not result.get('success'):
+                            error = result.get('error') if result else "Unknown error"
+                            log.error(f"Browser download failed from player source: {error}")
+                            
+                            # Switch back to main frame before returning
+                            self.driver.switch_to.default_content()
+                            return False
+                            
+                        # Save the base64 data to a file
+                        data_url = result.get('dataUrl')
+                        content_length = result.get('contentLength', 0)
+                        
+                        if not data_url or not content_length:
+                            log.error("Invalid data received from browser")
+                            
+                            # Switch back to main frame before returning
+                            self.driver.switch_to.default_content()
+                            return False
+                            
+                        log.debug(f"Received {content_length} bytes from browser, saving to {file_path}")
+                        
+                        # Extract and save base64 data
+                        import base64
+                        header, data = data_url.split(',', 1)
+                        binary_data = base64.b64decode(data)
+                        
+                        with open(file_path, 'wb') as f:
+                            f.write(binary_data)
+                            
+                        log.info(f"Browser download completed from player source: {file_path} ({content_length} bytes)")
+                        
+                        # Switch back to main frame before returning
+                        self.driver.switch_to.default_content()
+                        return True
+                    else:
+                        log.error("Could not find video source in player")
+                else:
+                    log.error("Could not find play button in player")
+            except Exception as e:
+                log.error(f"Error during iframe navigation: {str(e)}", exc_info=True)
+            
+            # Switch back to main frame
+            self.driver.switch_to.default_content()
+            return False
+            
+        except Exception as e:
+            log.error(f"Direct navigation download failed: {str(e)}", exc_info=True)
+            
+            # Make sure to switch back to main frame
+            try:
+                self.driver.switch_to.default_content()
+            except:
+                pass
+                
+            return False
+            
+            # First, add a script to try enabling CORS in the browser
+            cors_script = """
+            // Add CORS headers to requests via Service Worker if possible
+            try {
+                if ('serviceWorker' in navigator) {
+                    console.log("ServiceWorker is supported, attempting to intercept requests");
+                    
+                    // Unregister any existing service workers
+                    navigator.serviceWorker.getRegistrations().then(registrations => {
+                        registrations.forEach(registration => {
+                            registration.unregister();
+                            console.log('ServiceWorker unregistered');
+                        });
+                    });
+                }
+            } catch (e) {
+                console.error("Error setting up service worker:", e);
+            }
+            
+            // Extract current origin for debugging
+            return window.location.origin;
+            """
+            
+            # Try to set up CORS handling
+            origin = self.driver.execute_script(cors_script)
+            log.debug(f"Running in origin context: {origin}")
+            
+            # Use JavaScript fetch API to download the video through the browser session
+            script = """
+            async function downloadFile(url, filePath) {
+                try {
+                    console.log("Fetching:", url);
+                    
+                    // Extract app parameter if exists
+                    const appParam = url.includes('app=') ? 
+                        url.split('app=')[1].split('&')[0] : null;
+
+                    console.log("App parameter:", appParam);
+                    
+                    // Extract token
+                    const tokenMatch = url.match(/hdntl=([^&]+)/);
+                    const token = tokenMatch ? tokenMatch[1] : null;
+                    console.log("Token found:", token ? token.substring(0, 20) + "..." : "none");
+                    
+                    const headers = {
+                        'Origin': 'https://cf-embed.play.hotmart.com',
+                        'Referer': 'https://cf-embed.play.hotmart.com/',
+                        'Accept': '*/*',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                    };
+                    
+                    // Add token to headers
+                    if (token) {
+                        headers['hdntl'] = token;
+                    }
+                    
+                    // Add app parameter if found
+                    if (appParam) {
+                        headers['X-App-Id'] = appParam;
+                        headers['app'] = appParam;
+                    }
+                    
+                    // Log the actual request we're about to make
+                    console.log("Making request with headers:", JSON.stringify(headers));
+                    
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        credentials: 'include',
+                        headers: headers
+                    });
+                    
+                    console.log("Response status:", response.status, response.statusText);
+                    console.log("Response headers:", [...response.headers.entries()]);
+                    
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        console.error("Error response body:", errorText);
+                        return { 
+                            success: false, 
+                            error: "HTTP Error: " + response.status,
+                            details: errorText
+                        };
                     }
                     
                     console.log("Response received, getting array buffer...");
@@ -678,22 +1091,60 @@ class VideoDownloader:
             async function fetchM3U8Content(url) {
                 try {
                     console.log("Fetching M3U8:", url);
+                    
+                    // Extract app parameter if exists
+                    const appParam = url.includes('app=') ? 
+                        url.split('app=')[1].split('&')[0] : null;
+
+                    console.log("App parameter:", appParam);
+                    
+                    // Extract token
+                    const tokenMatch = url.match(/hdntl=([^&]+)/);
+                    const token = tokenMatch ? tokenMatch[1] : null;
+                    console.log("Token found:", token ? token.substring(0, 20) + "..." : "none");
+                    
+                    const headers = {
+                        'Origin': 'https://cf-embed.play.hotmart.com',
+                        'Referer': 'https://cf-embed.play.hotmart.com/',
+                        'Accept': '*/*',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                    };
+                    
+                    // Add token to headers
+                    if (token) {
+                        headers['hdntl'] = token;
+                    }
+                    
+                    // Add app parameter if found
+                    if (appParam) {
+                        headers['X-App-Id'] = appParam;
+                        headers['app'] = appParam;
+                    }
+                    
+                    // Log the actual request we're about to make
+                    console.log("Making request with headers:", JSON.stringify(headers));
+                    
                     const response = await fetch(url, {
                         method: 'GET',
                         credentials: 'include',
-                        headers: {
-                            'Origin': 'https://cf-embed.play.hotmart.com',
-                            'Referer': 'https://cf-embed.play.hotmart.com/'
-                        }
+                        headers: headers
                     });
                     
+                    console.log("Response status:", response.status);
+                    
                     if (!response.ok) {
-                        return { success: false, error: "HTTP Error: " + response.status };
+                        return { 
+                            success: false, 
+                            error: "HTTP Error: " + response.status,
+                            details: await response.text()
+                        };
                     }
                     
                     const text = await response.text();
+                    console.log("Received playlist data:", text.substring(0, 100) + "...");
                     return { success: true, content: text };
                 } catch (error) {
+                    console.error("Error in fetchM3U8Content:", error);
                     return { success: false, error: error.toString() };
                 }
             }
@@ -703,6 +1154,7 @@ class VideoDownloader:
             
             log.debug("Fetching M3U8 playlist via browser")
             result = self.driver.execute_script(fetch_script, video_url)
+            log.debug(f"Browser fetch result: {result}")
             
             if not result or not result.get('success'):
                 error = result.get('error') if result else "Unknown error"
