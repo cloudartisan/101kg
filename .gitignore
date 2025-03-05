@@ -178,3 +178,7 @@ logs/*
 
 # Credentials config file
 config.json
+
+# Node.js files (not used in this project)
+package-lock.json
+node_modules/
