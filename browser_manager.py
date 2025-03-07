@@ -85,7 +85,7 @@ class BrowserManager:
             chrome_options.add_argument("--headless=new")
             # Additional options for headless mode to ensure proper video playback
             chrome_options.add_argument("--autoplay-policy=no-user-gesture-required")
-            chrome_options.add_argument("--mute-audio")
+            # Removed "--mute-audio" to ensure audio is captured
 
         # Set user data directory if provided
         if self.user_data_dir:
@@ -110,7 +110,7 @@ class BrowserManager:
         firefox_options.set_preference("browser.download.manager.showWhenStarting", False)
         firefox_options.set_preference("browser.helperApps.neverAsk.saveToDisk", 
                                       "video/mp4,video/x-matroska,video/webm,video/ogg,application/octet-stream,application/vnd.apple.mpegurl")
-        firefox_options.set_preference("media.volume_scale", "0.0")  # Mute audio
+        firefox_options.set_preference("media.volume_scale", "1.0")  # Enable audio (was 0.0)
         firefox_options.set_preference("media.autoplay.default", 0)  # Allow autoplay
         firefox_options.set_preference("media.autoplay.blocking_policy", 0)  # Don't block autoplay
         
@@ -319,7 +319,7 @@ class BrowserManager:
             bool: True if popup was handled, False otherwise
         """
         try:
-            log.debug("Checking for cookie policy popup")
+            log.info("Checking for cookie policy popup")
             # Wait only a short time since we don't want to slow things down if there's no popup
             wait = WebDriverWait(self.driver, timeout)
 
@@ -333,6 +333,99 @@ class BrowserManager:
             except Exception:
                 pass
 
+            # Try with specific text "This site uses cookies"
+            try:
+                log.info("Looking for 'This site uses cookies' dialog")
+                
+                # Try direct approach - look for the OK button directly
+                try:
+                    log.info("Looking for cookie OK button directly")
+                    ok_buttons = self.driver.find_elements(By.XPATH, "//button[text()='OK' or text()='Ok' or text()='ok']")
+                    if len(ok_buttons) > 0:
+                        log.info(f"Found {len(ok_buttons)} OK buttons directly")
+                        for button in ok_buttons:
+                            try:
+                                if button.is_displayed():
+                                    log.info("Found visible OK button, clicking it")
+                                    self.driver.execute_script("arguments[0].click();", button)
+                                    log.info("Clicked OK button")
+                                    time.sleep(1)
+                                    return True
+                            except Exception as e:
+                                log.info(f"Error with OK button: {e}")
+                except Exception as e:
+                    log.info(f"Error searching for OK buttons: {e}")
+                
+                # Try multiple patterns to find the cookie dialog text
+                cookie_text_elements = self.driver.find_elements(By.XPATH, 
+                    "//*[contains(text(), 'This site uses cookies') or contains(text(), 'site uses cookies') or contains(text(), 'cookies are important')]")
+                
+                # Also try looking for the text in divs with cookie/modal classes
+                if len(cookie_text_elements) == 0:
+                    log.info("Trying to find cookie dialog by class and content")
+                    cookie_text_elements = self.driver.find_elements(By.XPATH, 
+                        "//div[contains(@class, 'cookie') or contains(@class, 'modal')]//p[contains(text(), 'cookie') or contains(text(), 'Cookie')]")
+                
+                log.info(f"Found {len(cookie_text_elements)} elements containing cookie-related text")
+                
+                # Dump page source for debugging if no elements found
+                if len(cookie_text_elements) == 0:
+                    log.info("No cookie dialog found, dumping some page content for debugging")
+                    try:
+                        page_body = self.driver.find_element(By.TAG_NAME, "body").text
+                        if len(page_body) > 1000:
+                            page_snippet = page_body[:1000] + "..."
+                        else:
+                            page_snippet = page_body
+                        log.info(f"Page content snippet: {page_snippet}")
+                        
+                        # If we see the cookie text in the page but couldn't find it with XPath, try JavaScript
+                        if "This site uses cookies" in page_body or "site uses cookies" in page_body:
+                            log.info("Cookie text found in page body, trying JavaScript approach")
+                            result = self.driver.execute_script("""
+                                // Try to find and click OK button for cookie consent
+                                var buttons = document.querySelectorAll('button');
+                                for (var i = 0; i < buttons.length; i++) {
+                                    if (buttons[i].textContent.trim().toUpperCase() === 'OK') {
+                                        console.log('Found OK button via JS');
+                                        buttons[i].click();
+                                        return true;
+                                    }
+                                }
+                                return false;
+                            """)
+                            if result:
+                                log.info("Successfully clicked OK button via JavaScript")
+                                return True
+                    except Exception as e:
+                        log.info(f"Could not get page content: {e}")
+                for element in cookie_text_elements:
+                    # Try to find the parent dialog container
+                    try:
+                        dialog_container = element.find_element(By.XPATH, "./ancestor::div[contains(@class, 'cookie') or contains(@class, 'dialog') or contains(@class, 'modal')]")
+                        if dialog_container.is_displayed():
+                            log.info("Found 'This site uses cookies' dialog, attempting to accept...")
+                            
+                            # First look for an OK button
+                            ok_buttons = dialog_container.find_elements(By.XPATH, 
+                                ".//button[contains(text(), 'OK') or contains(text(), 'Ok') or contains(text(), 'ok')]")
+                            
+                            log.info(f"Found {len(ok_buttons)} OK buttons in dialog")
+                            for button in ok_buttons:
+                                if button.is_displayed():
+                                    log.info("Found visible OK button, clicking it")
+                                    self.driver.execute_script("arguments[0].click();", button)
+                                    log.info("Clicked OK button on cookie dialog")
+                                    time.sleep(1)
+                                    return True
+                            
+                            # If no OK button found, try other accept buttons
+                            return self._try_accept_cookie_buttons(dialog_container)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+                
             # Try other common cookie consent popup classes/IDs
             cookie_selectors = [
                 ".cookie-notice", "#cookie-notice", ".cookie-banner", "#cookie-banner",
@@ -369,7 +462,8 @@ class BrowserManager:
         selectors = [
             "button.accept-button", "button.accept", "button.agree",
             ".accept-cookies-button", "button[data-action='accept']",
-            ".cookie-accept-button", "#acceptCookies"
+            ".cookie-accept-button", "#acceptCookies", 
+            "button:contains('OK')", "button.ok", "#okButton", "[aria-label='OK']"
         ]
 
         for selector in selectors:
@@ -412,7 +506,8 @@ class BrowserManager:
                         for (var k = 0; k < buttons.length; k++) {
                             if (buttons[k].innerText.toLowerCase().includes('accept') || 
                                 buttons[k].innerText.toLowerCase().includes('agree') ||
-                                buttons[k].innerText.toLowerCase().includes('aceitar')) {
+                                buttons[k].innerText.toLowerCase().includes('aceitar') ||
+                                buttons[k].innerText.toLowerCase().includes('ok')) {
                                 buttons[k].click();
                                 return true;
                             }

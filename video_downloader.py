@@ -209,7 +209,33 @@ class VideoDownloader:
             # Wait for login to complete
             log.info("Waiting for login to complete")
             time.sleep(10)  # Increased wait time
-
+            
+            # Check for login errors or invalid credentials
+            error_elements = self.driver.find_elements(By.XPATH, 
+                "//*[contains(text(), 'Invalid') or contains(text(), 'incorrect') or contains(text(), 'failed')]")
+            
+            for error in error_elements:
+                if error.is_displayed():
+                    error_text = error.text.strip()
+                    if error_text and ("invalid" in error_text.lower() or "incorrect" in error_text.lower()):
+                        log.error(f"Login failed: {error_text}")
+                        return False
+            
+            # Check if we're still on the login page
+            if "login" in self.driver.current_url.lower():
+                log.error("Login failed: Still on login page after attempt")
+                return False
+            
+            # Check if we can find elements that should be present after login
+            try:
+                # Look for elements that would typically be present after successful login
+                WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".menu-items, .user-menu, .dashboard"))
+                )
+            except Exception:
+                log.error("Login likely failed: Could not find post-login elements")
+                return False
+                
             # Transfer cookies from Selenium to requests session
             self._transfer_cookies_to_session()
             log.info("Login successful")
