@@ -5193,7 +5193,16 @@ class VideoDownloader:
 
             for i, lesson in enumerate(lessons):
                 hash = lesson.get_attribute('data-page-hash')
-                title = lesson.find_element(By.CSS_SELECTOR, '.navigation-page-title').text.strip()
+                title_elem = lesson.find_element(By.CSS_SELECTOR, '.navigation-page-title')
+                title = title_elem.text.strip() if title_elem else f"Lesson {i+1}"
+                
+                # If title is empty for some reason, use a fallback
+                if not title:
+                    title = f"Lesson {i+1}"
+                    
+                # For debugging
+                log.debug(f"Found lesson: {title} (hash: {hash})")
+                
                 lesson_data.append({'hash': hash, 'title': title})
 
             log.info(f"Successfully extracted data for {len(lesson_data)} lessons")
