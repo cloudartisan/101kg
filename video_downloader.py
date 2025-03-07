@@ -642,6 +642,12 @@ class VideoDownloader:
             bool: True if download successful, False otherwise
         """
         try:
+            # Firefox JavaScript compatibility fix - we need to modify all scripts to avoid 'await'
+            # outside of async functions, which Firefox doesn't support in execute_script
+            if self.browser_type == "firefox":
+                log.debug("Applying Firefox JavaScript compatibility fixes")
+                self._apply_firefox_js_fixes()
+                
             # If Video Downloader Helper extension is available (Firefox), use it first
             if self.vdh_extension_installed:
                 log.info(f"Attempting to download {filename} using Video Downloader Helper extension")
@@ -1745,198 +1751,416 @@ class VideoDownloader:
             # Step 3: Wait a moment for video to start playing
             time.sleep(2)
             
-            # Step 4: Use a more comprehensive script to record with audio
-            recording_script = """
-            return new Promise(async (resolve) => {
-                try {
-                    console.log("Starting enhanced video recording with audio");
-                    
-                    // Find video element
-                    const videoElement = document.querySelector('video');
-                    if (!videoElement) {
-                        return resolve({ success: false, error: "No video element found" });
-                    }
-                    
-                    // First unmute the video to ensure audio is available
-                    // but keep volume low to avoid feedback
-                    videoElement.muted = false;
-                    videoElement.volume = 0.01;
-                    videoElement.currentTime = 0;
-                    
-                    // Try to ensure autoplay works with audio
+            # Step 4: Use Firefox-compatible script for Firefox, normal script for others
+            if self.browser_type == "firefox":
+                # Firefox-compatible version (no await, using Promise chains)
+                recording_script = """
+                // Using Firefox-compatible script (no await keywords)
+                var recordingPromise = new Promise(function(resolve) {
                     try {
-                        // First try with user gesture simulation for browsers that require it
-                        videoElement.addEventListener('canplay', () => {
-                            // Create and trigger a fake click event on the video
-                            const clickEvent = new MouseEvent('click', {
-                                view: window,
-                                bubbles: true,
-                                cancelable: true
-                            });
-                            videoElement.dispatchEvent(clickEvent);
-                            
-                            // Now try to play with audio
-                            videoElement.play().catch(e => console.log("Play error:", e));
-                        }, { once: true });
+                        console.log("Starting enhanced video recording with audio (Firefox compatible)");
                         
-                        // Force a load event if needed
-                        if (videoElement.readyState >= 2) {
-                            videoElement.dispatchEvent(new Event('canplay'));
-                        }
-                    } catch (e) {
-                        console.error("Error during play setup:", e);
-                        // Try direct play as fallback
-                        videoElement.play().catch(e => console.log("Direct play error:", e));
-                    }
-                    
-                    // Wait a moment for play to start
-                    await new Promise(r => setTimeout(r, 1000));
-                    
-                    // Set up canvas for video capture
-                    const canvas = document.createElement('canvas');
-                    canvas.width = videoElement.videoWidth || 1280;
-                    canvas.height = videoElement.videoHeight || 720;
-                    const ctx = canvas.getContext('2d');
-                    
-                    // Create canvas stream for video
-                    const canvasStream = canvas.captureStream(30); // 30fps
-                    
-                    // Try multiple methods to capture audio
-                    let combinedStream = canvasStream;
-                    
-                    try {
-                        // Method 1: Try to get audio from the video element directly
-                        if (videoElement.captureStream) {
-                            console.log("Using video element captureStream for audio");
-                            const videoStream = videoElement.captureStream();
-                            const audioTracks = videoStream.getAudioTracks();
-                            
-                            if (audioTracks.length > 0) {
-                                console.log("Found audio track in video element:", audioTracks[0].label);
-                                // Add the audio track to our canvas stream
-                                canvasStream.addTrack(audioTracks[0]);
-                            } else {
-                                console.log("No audio tracks found in video element stream");
-                            }
-                        } else {
-                            console.log("captureStream not supported by video element");
+                        // Find video element
+                        var videoElement = document.querySelector('video');
+                        if (!videoElement) {
+                            return resolve({ success: false, error: "No video element found" });
                         }
                         
-                        // Method 2: Try to get system audio permission
+                        // First unmute the video to ensure audio is available
+                        // but keep volume low to avoid feedback
+                        videoElement.muted = false;
+                        videoElement.volume = 0.01;
+                        videoElement.currentTime = 0;
+                        
+                        // Try to ensure autoplay works with audio
                         try {
-                            // This will prompt for audio permission if not already granted
-                            console.log("Requesting user audio...");
-                            const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                            console.log("Received audio stream:", audioStream);
+                            // First try with user gesture simulation for browsers that require it
+                            videoElement.addEventListener('canplay', function() {
+                                // Create and trigger a fake click event on the video
+                                var clickEvent = new MouseEvent('click', {
+                                    view: window,
+                                    bubbles: true,
+                                    cancelable: true
+                                });
+                                videoElement.dispatchEvent(clickEvent);
+                                
+                                // Now try to play with audio
+                                videoElement.play().catch(function(e) { console.log("Play error:", e); });
+                            }, { once: true });
                             
-                            // Method 2a: Create a new MediaStream with both video and audio
-                            const newStream = new MediaStream();
-                            
-                            // Add all video tracks from canvas stream
-                            canvasStream.getVideoTracks().forEach(track => {
-                                newStream.addTrack(track);
-                            });
-                            
-                            // Add all audio tracks from audio stream
-                            audioStream.getAudioTracks().forEach(track => {
-                                console.log("Adding audio track:", track.label);
-                                newStream.addTrack(track);
-                            });
-                            
-                            // Use the combined stream
-                            combinedStream = newStream;
-                            console.log("Created combined stream with video and system audio");
+                            // Force a load event if needed
+                            if (videoElement.readyState >= 2) {
+                                videoElement.dispatchEvent(new Event('canplay'));
+                            }
                         } catch (e) {
-                            console.log("Could not get system audio:", e);
+                            console.error("Error during play setup:", e);
+                            // Try direct play as fallback
+                            videoElement.play().catch(function(e) { console.log("Direct play error:", e); });
                         }
+                        
+                        // Wait a moment for play to start
+                        setTimeout(function() {
+                            // Set up canvas for video capture
+                            var canvas = document.createElement('canvas');
+                            canvas.width = videoElement.videoWidth || 1280;
+                            canvas.height = videoElement.videoHeight || 720;
+                            var ctx = canvas.getContext('2d');
+                            
+                            // Create canvas stream for video
+                            var canvasStream = canvas.captureStream(30); // 30fps
+                            
+                            // Try multiple methods to capture audio
+                            var combinedStream = canvasStream;
+                            
+                            try {
+                                // Method 1: Try to get audio from the video element directly
+                                if (videoElement.captureStream) {
+                                    console.log("Using video element captureStream for audio");
+                                    var videoStream = videoElement.captureStream();
+                                    var audioTracks = videoStream.getAudioTracks();
+                                    
+                                    if (audioTracks.length > 0) {
+                                        console.log("Found audio track in video element:", audioTracks[0].label);
+                                        // Add the audio track to our canvas stream
+                                        canvasStream.addTrack(audioTracks[0]);
+                                    } else {
+                                        console.log("No audio tracks found in video element stream");
+                                    }
+                                } else {
+                                    console.log("captureStream not supported by video element");
+                                }
+                                
+                                // Method 2: Try to get system audio permission
+                                try {
+                                    // This will prompt for audio permission if not already granted
+                                    console.log("Requesting user audio...");
+                                    navigator.mediaDevices.getUserMedia({ audio: true })
+                                    .then(function(audioStream) {
+                                        console.log("Received audio stream:", audioStream);
+                                        
+                                        // Method 2a: Create a new MediaStream with both video and audio
+                                        var newStream = new MediaStream();
+                                        
+                                        // Add all video tracks from canvas stream
+                                        canvasStream.getVideoTracks().forEach(function(track) {
+                                            newStream.addTrack(track);
+                                        });
+                                        
+                                        // Add all audio tracks from audio stream
+                                        audioStream.getAudioTracks().forEach(function(track) {
+                                            console.log("Adding audio track:", track.label);
+                                            newStream.addTrack(track);
+                                        });
+                                        
+                                        // Use the combined stream for future recording
+                                        combinedStream = newStream;
+                                        console.log("Created combined stream with video and system audio");
+                                    })
+                                    .catch(function(e) {
+                                        console.log("Could not get system audio:", e);
+                                    });
+                                } catch (e) {
+                                    console.log("Could not get system audio:", e);
+                                }
+                            } catch (e) {
+                                console.error("Error setting up audio:", e);
+                            }
+                            
+                            // After a short delay to allow audio permissions to be handled
+                            setTimeout(function() {
+                                // Set up recorder with the best available codecs
+                                var recorder;
+                                var mimeType = '';
+                                
+                                // Try codecs in order of preference (with audio codecs)
+                                var codecsToTry = [
+                                    'video/webm; codecs=vp9,opus',
+                                    'video/webm; codecs=vp8,opus',
+                                    'video/webm; codecs=vp9',
+                                    'video/webm; codecs=vp8',
+                                    'video/webm'
+                                ];
+                                
+                                for (var i = 0; i < codecsToTry.length; i++) {
+                                    var codec = codecsToTry[i];
+                                    if (MediaRecorder.isTypeSupported(codec)) {
+                                        mimeType = codec;
+                                        console.log("Using codec:", codec);
+                                        break;
+                                    }
+                                }
+                                
+                                // Create the media recorder with the best supported codec
+                                var recorderOptions = {
+                                    mimeType: mimeType,
+                                    videoBitsPerSecond: 2500000,  // 2.5 Mbps
+                                    audioBitsPerSecond: 128000    // 128 kbps audio
+                                };
+                                
+                                try {
+                                    recorder = new MediaRecorder(combinedStream, recorderOptions);
+                                } catch (e) {
+                                    console.log("MediaRecorder initialization error:", e);
+                                    recorder = new MediaRecorder(combinedStream);
+                                }
+                                
+                                console.log("Created MediaRecorder");
+                                
+                                var chunks = [];
+                                recorder.ondataavailable = function(e) {
+                                    if (e.data.size > 0) {
+                                        chunks.push(e.data);
+                                        console.log("Recorded chunk:", e.data.size, "bytes");
+                                    }
+                                };
+                                
+                                // Start recording with more frequent chunks
+                                recorder.start(500);  // 2 chunks per second
+                                console.log("Recording started");
+                                
+                                // Draw frames
+                                var frameId;
+                                var drawFrame = function() {
+                                    if (videoElement.readyState >= 2) {
+                                        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+                                    }
+                                    frameId = requestAnimationFrame(drawFrame);
+                                };
+                                drawFrame();
+                                
+                                // Record for a short time to ensure we get something useful
+                                // but avoid timeouts
+                                console.log("Recording for 30 seconds");
+                                
+                                // Set a timer to stop recording
+                                setTimeout(function() {
+                                    // Stop everything
+                                    console.log("Stopping recording");
+                                    recorder.stop();
+                                    cancelAnimationFrame(frameId);
+                                    
+                                    // Wait for the last ondataavailable to fire
+                                    setTimeout(function() {
+                                        // Prepare result
+                                        console.log("Preparing result with", chunks.length, "chunks");
+                                        var blob = new Blob(chunks, { type: 'video/webm' });
+                                        var reader = new FileReader();
+                                        
+                                        reader.onloadend = function() {
+                                            resolve({
+                                                success: true,
+                                                dataUrl: reader.result,
+                                                contentLength: blob.size,
+                                                hasAudio: combinedStream.getAudioTracks().length > 0
+                                            });
+                                        };
+                                        
+                                        reader.readAsDataURL(blob);
+                                    }, 1000);
+                                }, 30000);
+                            }, 1000);
+                        }, 1000);
                     } catch (e) {
-                        console.error("Error setting up audio:", e);
+                        console.error("Recording error:", e);
+                        resolve({ success: false, error: e.toString() });
                     }
-                    
-                    // Set up recorder with the best available codecs
-                    let recorder;
-                    let mimeType = '';
-                    
-                    // Try codecs in order of preference (with audio codecs)
-                    const codecsToTry = [
-                        'video/webm; codecs=vp9,opus',
-                        'video/webm; codecs=vp8,opus',
-                        'video/webm; codecs=vp9',
-                        'video/webm; codecs=vp8',
-                        'video/webm'
-                    ];
-                    
-                    for (const codec of codecsToTry) {
-                        if (MediaRecorder.isTypeSupported(codec)) {
-                            mimeType = codec;
-                            console.log("Using codec:", codec);
-                            break;
+                });
+                
+                return recordingPromise;
+                """
+            else:
+                # Normal script with await for Chrome
+                recording_script = """
+                return new Promise(async (resolve) => {
+                    try {
+                        console.log("Starting enhanced video recording with audio");
+                        
+                        // Find video element
+                        const videoElement = document.querySelector('video');
+                        if (!videoElement) {
+                            return resolve({ success: false, error: "No video element found" });
                         }
+                        
+                        // First unmute the video to ensure audio is available
+                        // but keep volume low to avoid feedback
+                        videoElement.muted = false;
+                        videoElement.volume = 0.01;
+                        videoElement.currentTime = 0;
+                        
+                        // Try to ensure autoplay works with audio
+                        try {
+                            // First try with user gesture simulation for browsers that require it
+                            videoElement.addEventListener('canplay', () => {
+                                // Create and trigger a fake click event on the video
+                                const clickEvent = new MouseEvent('click', {
+                                    view: window,
+                                    bubbles: true,
+                                    cancelable: true
+                                });
+                                videoElement.dispatchEvent(clickEvent);
+                                
+                                // Now try to play with audio
+                                videoElement.play().catch(e => console.log("Play error:", e));
+                            }, { once: true });
+                            
+                            // Force a load event if needed
+                            if (videoElement.readyState >= 2) {
+                                videoElement.dispatchEvent(new Event('canplay'));
+                            }
+                        } catch (e) {
+                            console.error("Error during play setup:", e);
+                            // Try direct play as fallback
+                            videoElement.play().catch(e => console.log("Direct play error:", e));
+                        }
+                        
+                        // Wait a moment for play to start
+                        await new Promise(r => setTimeout(r, 1000));
+                        
+                        // Set up canvas for video capture
+                        const canvas = document.createElement('canvas');
+                        canvas.width = videoElement.videoWidth || 1280;
+                        canvas.height = videoElement.videoHeight || 720;
+                        const ctx = canvas.getContext('2d');
+                        
+                        // Create canvas stream for video
+                        const canvasStream = canvas.captureStream(30); // 30fps
+                        
+                        // Try multiple methods to capture audio
+                        let combinedStream = canvasStream;
+                        
+                        try {
+                            // Method 1: Try to get audio from the video element directly
+                            if (videoElement.captureStream) {
+                                console.log("Using video element captureStream for audio");
+                                const videoStream = videoElement.captureStream();
+                                const audioTracks = videoStream.getAudioTracks();
+                                
+                                if (audioTracks.length > 0) {
+                                    console.log("Found audio track in video element:", audioTracks[0].label);
+                                    // Add the audio track to our canvas stream
+                                    canvasStream.addTrack(audioTracks[0]);
+                                } else {
+                                    console.log("No audio tracks found in video element stream");
+                                }
+                            } else {
+                                console.log("captureStream not supported by video element");
+                            }
+                            
+                            // Method 2: Try to get system audio permission
+                            try {
+                                // This will prompt for audio permission if not already granted
+                                console.log("Requesting user audio...");
+                                const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                                console.log("Received audio stream:", audioStream);
+                                
+                                // Method 2a: Create a new MediaStream with both video and audio
+                                const newStream = new MediaStream();
+                                
+                                // Add all video tracks from canvas stream
+                                canvasStream.getVideoTracks().forEach(track => {
+                                    newStream.addTrack(track);
+                                });
+                                
+                                // Add all audio tracks from audio stream
+                                audioStream.getAudioTracks().forEach(track => {
+                                    console.log("Adding audio track:", track.label);
+                                    newStream.addTrack(track);
+                                });
+                                
+                                // Use the combined stream
+                                combinedStream = newStream;
+                                console.log("Created combined stream with video and system audio");
+                            } catch (e) {
+                                console.log("Could not get system audio:", e);
+                            }
+                        } catch (e) {
+                            console.error("Error setting up audio:", e);
+                        }
+                        
+                        // Set up recorder with the best available codecs
+                        let recorder;
+                        let mimeType = '';
+                        
+                        // Try codecs in order of preference (with audio codecs)
+                        const codecsToTry = [
+                            'video/webm; codecs=vp9,opus',
+                            'video/webm; codecs=vp8,opus',
+                            'video/webm; codecs=vp9',
+                            'video/webm; codecs=vp8',
+                            'video/webm'
+                        ];
+                        
+                        for (const codec of codecsToTry) {
+                            if (MediaRecorder.isTypeSupported(codec)) {
+                                mimeType = codec;
+                                console.log("Using codec:", codec);
+                                break;
+                            }
+                        }
+                        
+                        // Create the media recorder with the best supported codec
+                        const recorderOptions = {
+                            mimeType: mimeType,
+                            videoBitsPerSecond: 2500000,  // 2.5 Mbps
+                            audioBitsPerSecond: 128000    // 128 kbps audio
+                        };
+                        
+                        recorder = new MediaRecorder(combinedStream, recorderOptions);
+                        console.log("Created MediaRecorder with options:", recorderOptions);
+                        
+                        const chunks = [];
+                        recorder.ondataavailable = e => {
+                            if (e.data.size > 0) {
+                                chunks.push(e.data);
+                                console.log("Recorded chunk:", e.data.size, "bytes");
+                            }
+                        };
+                        
+                        // Start recording with more frequent chunks
+                        recorder.start(500);  // 2 chunks per second
+                        console.log("Recording started");
+                        
+                        // Draw frames
+                        let frameId;
+                        const drawFrame = () => {
+                            if (videoElement.readyState >= 2) {
+                                ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+                            }
+                            frameId = requestAnimationFrame(drawFrame);
+                        };
+                        drawFrame();
+                        
+                        // Record for a short time to ensure we get something useful
+                        // but avoid timeouts
+                        console.log("Recording for 30 seconds");
+                        await new Promise(r => setTimeout(r, 30000));
+                        
+                        // Stop everything
+                        console.log("Stopping recording");
+                        recorder.stop();
+                        cancelAnimationFrame(frameId);
+                        
+                        // Wait for the last ondataavailable to fire
+                        await new Promise(r => setTimeout(r, 1000));
+                        
+                        // Prepare result
+                        console.log("Preparing result with", chunks.length, "chunks");
+                        const blob = new Blob(chunks, { type: 'video/webm' });
+                        const reader = new FileReader();
+                        await new Promise(r => { reader.onloadend = r; reader.readAsDataURL(blob); });
+                        
+                        resolve({
+                            success: true,
+                            dataUrl: reader.result,
+                            contentLength: blob.size,
+                            hasAudio: combinedStream.getAudioTracks().length > 0
+                        });
+                    } catch (e) {
+                        console.error("Recording error:", e);
+                        resolve({ success: false, error: e.toString() });
                     }
-                    
-                    // Create the media recorder with the best supported codec
-                    const recorderOptions = {
-                        mimeType: mimeType,
-                        videoBitsPerSecond: 2500000,  // 2.5 Mbps
-                        audioBitsPerSecond: 128000    // 128 kbps audio
-                    };
-                    
-                    recorder = new MediaRecorder(combinedStream, recorderOptions);
-                    console.log("Created MediaRecorder with options:", recorderOptions);
-                    
-                    const chunks = [];
-                    recorder.ondataavailable = e => {
-                        if (e.data.size > 0) {
-                            chunks.push(e.data);
-                            console.log("Recorded chunk:", e.data.size, "bytes");
-                        }
-                    };
-                    
-                    // Start recording with more frequent chunks
-                    recorder.start(500);  // 2 chunks per second
-                    console.log("Recording started");
-                    
-                    // Draw frames
-                    let frameId;
-                    const drawFrame = () => {
-                        if (videoElement.readyState >= 2) {
-                            ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-                        }
-                        frameId = requestAnimationFrame(drawFrame);
-                    };
-                    drawFrame();
-                    
-                    // Record for a short time to ensure we get something useful
-                    // but avoid timeouts
-                    console.log("Recording for 30 seconds");
-                    await new Promise(r => setTimeout(r, 30000));
-                    
-                    // Stop everything
-                    console.log("Stopping recording");
-                    recorder.stop();
-                    cancelAnimationFrame(frameId);
-                    
-                    // Wait for the last ondataavailable to fire
-                    await new Promise(r => setTimeout(r, 1000));
-                    
-                    // Prepare result
-                    console.log("Preparing result with", chunks.length, "chunks");
-                    const blob = new Blob(chunks, { type: 'video/webm' });
-                    const reader = new FileReader();
-                    await new Promise(r => { reader.onloadend = r; reader.readAsDataURL(blob); });
-                    
-                    resolve({
-                        success: true,
-                        dataUrl: reader.result,
-                        contentLength: blob.size,
-                        hasAudio: combinedStream.getAudioTracks().length > 0
-                    });
-                } catch (e) {
-                    console.error("Recording error:", e);
-                    resolve({ success: false, error: e.toString() });
-                }
-            });
-            """
+                });
+                """
             
             # Step 5: Execute the script with a longer timeout
             log.debug("Starting recording")
