@@ -68,7 +68,8 @@ class TestChromeConfiguration:
         # Verify headless mode is set
         assert "--headless=new" in args
         assert "--autoplay-policy=no-user-gesture-required" in args
-        assert "--mute-audio" in args
+        # We've removed mute-audio flag to enable audio capture
+        assert "--mute-audio" not in args
 
     def test_configure_chrome_options_user_data_dir(self):
         """Test configuring Chrome options with user data directory."""
@@ -81,6 +82,36 @@ class TestChromeConfiguration:
         user_data_args = [arg for arg in args if arg.startswith("--user-data-dir=")]
         assert len(user_data_args) == 1
         assert f"--user-data-dir={user_data_dir}" in args
+
+
+class TestFirefoxConfiguration:
+    """Tests for Firefox configuration."""
+    
+    def test_configure_firefox_options_default(self):
+        """Test configuring Firefox options with default settings."""
+        manager = BrowserManager(browser_type="firefox")
+        options = manager._configure_firefox_options()
+        
+        # Verify audio is enabled (not muted)
+        assert options.preferences["media.volume_scale"] == "1.0"
+        
+        # Verify autoplay is enabled
+        assert options.preferences["media.autoplay.default"] == 0
+        assert options.preferences["media.autoplay.blocking_policy"] == 0
+        
+        # Verify headless mode is not set
+        assert "--headless" not in options.arguments
+        
+    def test_configure_firefox_options_headless(self):
+        """Test configuring Firefox options with headless mode."""
+        manager = BrowserManager(browser_type="firefox", headless=True)
+        options = manager._configure_firefox_options()
+        
+        # Verify headless mode is set
+        assert "--headless" in options.arguments
+        
+        # Verify audio is still enabled in headless mode
+        assert options.preferences["media.volume_scale"] == "1.0"
 
 
 class TestChromeDriverInitialization:
@@ -251,8 +282,8 @@ class TestCookiePolicyPopup:
         # Verify we attempted to click the button
         assert mock_driver.execute_script.call_count == 1
         
-        # Verify we logged the success
-        mock_info.assert_called_once()
+        # Verify we logged the success - can be called multiple times now
+        assert mock_info.call_count >= 1
         mock_warning.assert_not_called()
         
         # Verify the result
@@ -270,9 +301,20 @@ class TestCookiePolicyPopup:
         # First find_element call fails (ID lookup)
         mock_driver.find_element.side_effect = [Exception("Not found by ID")]
         
+        # Mock find_elements to return empty list for XPATH lookups
+        mock_driver.find_elements.return_value = []
+        
+        # For find_element by tag_name to get body text
+        mock_body = MagicMock()
+        mock_body.text = "Some page content without cookie text"
+        
         # Then we try CSS selectors
-        def find_element_css_side_effect(by, selector):
-            if by == By.CSS_SELECTOR:
+        def find_element_side_effect(by, selector):
+            if by == By.ID:
+                raise Exception("Not found by ID")
+            elif by == By.TAG_NAME and selector == "body":
+                return mock_body
+            elif by == By.CSS_SELECTOR:
                 if selector == ".cookie-notice":
                     cookie_element = MagicMock()
                     cookie_element.is_displayed.return_value = True
@@ -283,17 +325,18 @@ class TestCookiePolicyPopup:
                     return accept_button
             raise Exception(f"Element not found: {selector}")
             
-        mock_driver.find_element.side_effect = find_element_css_side_effect
+        mock_driver.find_element.side_effect = find_element_side_effect
         
         manager = BrowserManager()
         manager.driver = mock_driver
         result = manager.handle_cookie_policy_popup()
         
-        # Verify we tried the CSS selector approach
-        mock_driver.find_element.assert_has_calls([
-            call(By.ID, "hotmart-cookie-policy"),
-            call(By.CSS_SELECTOR, ".cookie-notice")
-        ])
+        # With our new implementation, several XPATH searches will happen first
+        # We're more interested in whether it eventually tries CSS selectors
+        assert mock_driver.find_element.call_count >= 3
+        assert call(By.ID, "hotmart-cookie-policy") in mock_driver.find_element.call_args_list
+        # Eventually it will try CSS selectors
+        assert call(By.CSS_SELECTOR, ".cookie-notice") in mock_driver.find_element.call_args_list
         
         # Verify we attempted to click the button
         assert mock_driver.execute_script.call_count == 1
@@ -301,14 +344,19 @@ class TestCookiePolicyPopup:
         # Verify the result
         assert result is True
 
+    @patch('time.sleep')
     @patch('logger.debug')
+    @patch('logger.info')
     @patch('logger.warning')
-    def test_handle_cookie_policy_popup_not_found(self, mock_warning, mock_debug):
+    def test_handle_cookie_policy_popup_not_found(self, mock_warning, mock_info, mock_debug, mock_sleep):
         """Test handling when cookie policy popup is not found."""
         mock_driver = MagicMock()
         
         # All find_element calls fail
         mock_driver.find_element.side_effect = Exception("Not found")
+        
+        # XPATH searches find nothing
+        mock_driver.find_elements.return_value = []
         
         # JavaScript approach returns False
         mock_driver.execute_script.return_value = False
@@ -318,10 +366,90 @@ class TestCookiePolicyPopup:
         result = manager.handle_cookie_policy_popup()
         
         # Verify we tried the JavaScript approach as last resort
-        mock_driver.execute_script.assert_called_once()
+        assert mock_driver.execute_script.call_count >= 1
         
         # Verify the result
         assert result is False
+        
+    @patch('time.sleep')
+    @patch('logger.debug')
+    @patch('logger.info')
+    @patch('logger.warning')
+    def test_handle_cookie_policy_popup_with_this_site_uses_cookies(self, mock_warning, mock_info, 
+                                                                  mock_debug, mock_sleep):
+        """Test handling cookie policy popup with 'This site uses cookies' text."""
+        mock_driver = MagicMock()
+        
+        # First lookup fails
+        mock_driver.find_element.side_effect = [Exception("Not found by ID")]
+        
+        # Cookie text elements found
+        cookie_text_element = MagicMock()
+        cookie_text_element.is_displayed.return_value = True
+        mock_driver.find_elements.return_value = [cookie_text_element]
+        
+        # Dialog container found
+        dialog_container = MagicMock()
+        dialog_container.is_displayed.return_value = True
+        cookie_text_element.find_element.return_value = dialog_container
+        
+        # OK button found
+        ok_button = MagicMock()
+        ok_button.is_displayed.return_value = True
+        dialog_container.find_elements.return_value = [ok_button]
+        
+        manager = BrowserManager()
+        manager.driver = mock_driver
+        result = manager.handle_cookie_policy_popup()
+        
+        # Verify we looked for elements with 'This site uses cookies' text
+        assert mock_driver.find_elements.call_count >= 1
+        
+        # Verify we attempted to click the OK button
+        assert mock_driver.execute_script.call_count == 1
+        
+        # Verify the result
+        assert result is True
+        
+    @patch('time.sleep')
+    @patch('logger.debug')
+    @patch('logger.info')
+    @patch('logger.warning')
+    def test_handle_cookie_policy_popup_javascript_approach(self, mock_warning, mock_info, 
+                                                          mock_debug, mock_sleep):
+        """Test handling cookie policy popup with JavaScript approach when text is in body."""
+        mock_driver = MagicMock()
+        
+        # All element lookups fail
+        mock_driver.find_element.side_effect = Exception("Not found")
+        mock_driver.find_elements.return_value = []
+        
+        # But we find body text with cookie message
+        mock_body = MagicMock()
+        mock_body.text = "This site uses cookies\nCookies are important for this site..."
+        
+        def find_element_side_effect(by, selector):
+            if by == By.TAG_NAME and selector == "body":
+                return mock_body
+            raise Exception(f"Element not found: {selector}")
+            
+        mock_driver.find_element.side_effect = find_element_side_effect
+        
+        # JavaScript finds and clicks OK button
+        mock_driver.execute_script.return_value = True
+        
+        manager = BrowserManager()
+        manager.driver = mock_driver
+        result = manager.handle_cookie_policy_popup()
+        
+        # Verify we tried to get body text to check for cookie message
+        assert call(By.TAG_NAME, "body") in mock_driver.find_element.call_args_list
+        
+        # Verify we used JavaScript to find and click OK button
+        assert mock_driver.execute_script.call_count == 1
+        
+        # Verify the result
+        assert result is True
 
 
 class TestWaitForElement:

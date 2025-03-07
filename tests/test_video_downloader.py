@@ -33,6 +33,7 @@ def video_downloader():
         # Access to mocks for assertions
         downloader._mock_browser_manager = mock_browser_manager_instance
         downloader._mock_session = mock_session
+        downloader._mock_driver = mock_browser_manager_instance.initialize.return_value
         
         yield downloader
 
@@ -152,6 +153,67 @@ class TestVideoDownloaderLogin:
         
         # Assertions
         assert result is False
+        
+    def test_login_failure_with_error_message(self, video_downloader):
+        """Test login failure with error message detection."""
+        # Mock fields and button
+        mock_email_field = MagicMock()
+        mock_password_field = MagicMock()
+        mock_button = MagicMock()
+        
+        # Set up browser manager to return fields and button
+        video_downloader._mock_browser_manager.wait_for_element.side_effect = [
+            mock_email_field,     # Email field
+            mock_password_field,  # Password field
+            mock_button           # Login button
+        ]
+        
+        # Setup error message to be found
+        mock_error = MagicMock()
+        mock_error.is_displayed.return_value = True
+        mock_error.text = "Invalid username or password"
+        video_downloader._mock_driver.find_elements.return_value = [mock_error]
+        
+        # Set current URL to still be on login page
+        video_downloader._mock_driver.current_url = "https://example.com/login"
+        
+        # Call login method
+        result = video_downloader.login()
+        
+        # Assertions
+        assert result is False
+        video_downloader._mock_driver.find_elements.assert_called()
+        
+    def test_login_failure_still_on_login_page(self, video_downloader):
+        """Test login failure when still on login page."""
+        # Mock fields and button
+        mock_email_field = MagicMock()
+        mock_password_field = MagicMock()
+        mock_button = MagicMock()
+        
+        # Set up browser manager to return fields and button
+        video_downloader._mock_browser_manager.wait_for_element.side_effect = [
+            mock_email_field,     # Email field
+            mock_password_field,  # Password field
+            mock_button           # Login button
+        ]
+        
+        # No error messages
+        video_downloader._mock_driver.find_elements.return_value = []
+        
+        # Set current URL to still be on login page
+        video_downloader._mock_driver.current_url = "https://example.com/login"
+        
+        # Make the WebDriverWait.until raise an exception (no post-login elements)
+        mock_wait = MagicMock()
+        mock_wait.until.side_effect = Exception("No post-login elements found")
+        
+        with patch('video_downloader.WebDriverWait', return_value=mock_wait):
+            # Call login method
+            result = video_downloader.login()
+            
+            # Assertions
+            assert result is False
 
 
 class TestVideoDownloaderTransferCookies:
