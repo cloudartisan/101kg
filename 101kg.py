@@ -69,6 +69,12 @@ def main():
     parser.add_argument('--headless', action='store_true',
                         help='Run browser in headless mode')
     
+    # Add browser options
+    parser.add_argument('--browser', choices=['chrome', 'firefox'], default='chrome',
+                        help='Browser to use for downloading (chrome or firefox)')
+    parser.add_argument('--browser-profile', type=str,
+                        help='Path to browser profile with Video Downloader Helper extension')
+                        
     # Add specific download options
     parser.add_argument('--list', action='store_true', 
                         help='List available videos without downloading')
@@ -116,8 +122,14 @@ def main():
         logger.error("Email and password are required. Use --email/--password options or a config file.")
         return 1
 
-    # Initialize downloader
-    downloader = VideoDownloader(email, password, headless=args.headless)
+    # Initialize downloader with browser options
+    downloader = VideoDownloader(
+        email, 
+        password, 
+        headless=args.headless,
+        browser_type=args.browser,
+        browser_profile=args.browser_profile
+    )
     start_time = time.time()
 
     try:

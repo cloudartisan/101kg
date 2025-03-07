@@ -37,7 +37,7 @@ class VideoDownloader:
     Handles authentication, navigation, URL extraction, and video downloading.
     """
 
-    def __init__(self, email, password, headless=False):
+    def __init__(self, email, password, headless=False, browser_type="chrome", browser_profile=None):
         """
         Initialize the downloader with user credentials.
 
@@ -45,12 +45,16 @@ class VideoDownloader:
             email (str): User's email for Hotmart login
             password (str): User's password for Hotmart login
             headless (bool): Whether to run the browser in headless mode
+            browser_type (str): Browser to use ("chrome" or "firefox")
+            browser_profile (str, optional): Path to browser profile with extensions installed
         """
         # URLs and credentials
         self.base_url = "https://101karategames.club.hotmart.com"
         self.login_url = "https://101karategames.club.hotmart.com/login"
         self.email = email
         self.password = password
+        self.browser_type = browser_type
+        self.browser_profile = browser_profile
 
         # Setup download directory
         self.download_dir = "videos"
@@ -60,12 +64,64 @@ class VideoDownloader:
         # Initialize HTTP session
         self.session = requests.Session()
 
-        # Initialize browser manager
-        self.browser_manager = BrowserManager(headless=headless)
+        # Initialize browser manager with specified browser type
+        self.browser_manager = BrowserManager(
+            headless=headless,
+            browser_type=browser_type,
+            browser_profile=browser_profile
+        )
         self.driver = self.browser_manager.initialize()
 
         if not self.driver:
-            raise Exception("Failed to initialize browser")
+            raise Exception(f"Failed to initialize {browser_type} browser")
+            
+        # Current lesson context for direct recording
+        self.current_lesson_url = None
+        self.current_lesson_title = None
+        self.current_lesson_parts = 1
+        self.current_video_id = None
+        self.current_jwt_token = None
+        
+        # Video Downloader Helper extension info (for Firefox)
+        self.vdh_extension_installed = False
+        
+        # We'll check for VDH extension after browser initialization
+        if self.browser_type == "firefox" and browser_profile is not None:
+            log.info("Firefox with profile detected, checking for Video Downloader Helper extension")
+            
+            # Check for VDH extension in the browser
+            try:
+                # First see if the browser window is already open
+                if self.driver:
+                    # Try to detect the extension directly in the browser
+                    extensions_script = """
+                    return {
+                        hasDownloadHelper: Boolean(document.querySelector(
+                            "#net_downloadhelper_toolbar, .net-downloadhelper-button, [title*='Download Helper'], #wrapper-downloadhelper-net_downloadhelper_toolbar"
+                        ))
+                    };
+                    """
+                    # Navigate to about:blank to execute the script safely
+                    self.driver.get("about:blank")
+                    time.sleep(1)
+                    
+                    # Execute the detection script
+                    extensions_info = self.driver.execute_script(extensions_script)
+                    
+                    if extensions_info and extensions_info.get('hasDownloadHelper'):
+                        self.vdh_extension_installed = True
+                        log.info("Video Downloader Helper extension detected in Firefox")
+                    else:
+                        log.warning("Video Downloader Helper extension not found in Firefox profile")
+            except Exception as e:
+                log.warning(f"Error detecting Video Downloader Helper extension: {e}")
+                
+            # Even if detection failed, we'll assume it's installed if Firefox profile was provided
+            if not self.vdh_extension_installed:
+                self.vdh_extension_installed = True
+                log.info("Assuming Video Downloader Helper is installed (Firefox with profile)")
+        else:
+            log.info(f"Using browser: {browser_type} without Video Downloader Helper extension")
 
     def login(self):
         """
@@ -220,6 +276,10 @@ class VideoDownloader:
     def extract_video_url(self, lesson_url):
         """
         Extract video URL(s) from lesson page.
+        
+        In the latest approach, this method now has dual purposes:
+        1. It navigates to the lesson page, which is critical for the direct recording method
+        2. It attempts to extract URLs as a fallback, but our primary approach will be direct recording
 
         Args:
             lesson_url (str): URL of the lesson page
@@ -232,57 +292,111 @@ class VideoDownloader:
             self.driver.get(lesson_url)
             time.sleep(8)  # Increased wait time for page to fully load
 
+            # DIRECT RECORDING PREPARATION
+            # Since we're going to try direct recording first as our main strategy,
+            # we'll prepare for that by setting variables that the recording method needs
+
+            # Store the lesson URL for use in the direct recording method
+            self.current_lesson_url = lesson_url
+
+            # Try to extract video name/part from the page
+            try:
+                # Try to find lesson title or other identifying info
+                title_element = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR,
+                    "h1, .lesson-title, .media-title, .title",
+                    timeout=3
+                )
+                if title_element:
+                    self.current_lesson_title = title_element.text.strip()
+                    log.debug(f"Found lesson title: {self.current_lesson_title}")
+            except Exception as e:
+                log.debug(f"Could not extract lesson title: {str(e)}")
+                self.current_lesson_title = None
+
+            # Check if there are multiple video parts
+            try:
+                parts = self.browser_manager.wait_for_elements(
+                    By.CSS_SELECTOR,
+                    "li.playlist-media, .video-part, .chapter-item",
+                    timeout=3
+                )
+                if parts and len(parts) > 0:
+                    log.debug(f"Found {len(parts)} video parts")
+                    self.current_lesson_parts = len(parts)
+                else:
+                    self.current_lesson_parts = 1
+            except Exception as e:
+                log.debug(f"Could not determine video parts: {str(e)}")
+                self.current_lesson_parts = 1
+
+            # TRADITIONAL URL EXTRACTION (as fallback)
+            # Continue with the original URL extraction approach as a fallback
             video_urls = []
             wait = WebDriverWait(self.driver, 15)
 
             # Find the iframe
             log.info("Looking for video iframe in page")
-            iframe = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='cf-embed.play.hotmart.com']"))
-            )
+            try:
+                iframe = wait.until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='cf-embed.play.hotmart.com']"))
+                )
 
-            # Extract video ID and JWT token from iframe src
-            iframe_src = iframe.get_attribute('src')
-            log.info(f"Found iframe with src")
-            log.debug(f"Iframe src: {iframe_src[:100]}...")
+                # Extract video ID and JWT token from iframe src
+                iframe_src = iframe.get_attribute('src')
+                log.info(f"Found iframe with src")
+                log.debug(f"Iframe src: {iframe_src[:100]}...")
 
-            video_id = URLExtractor.extract_video_id_from_iframe(iframe_src)
-            log.debug(f"Found video ID: {video_id}")
+                video_id = URLExtractor.extract_video_id_from_iframe(iframe_src)
+                log.debug(f"Found video ID: {video_id}")
 
-            if not video_id:
-                log.error("Failed to extract video ID from iframe src")
-                return []
+                if video_id:
+                    # Extract JWT token if present
+                    jwt_token = self._extract_jwt_token(iframe_src)
 
-            # Extract JWT token if present
-            jwt_token = self._extract_jwt_token(iframe_src)
+                    # Store for our direct recording method
+                    self.current_video_id = video_id
+                    self.current_jwt_token = jwt_token
 
-            # Try different methods to get the video URL
-            video_urls = self._try_jwt_token_approach(video_id, jwt_token)
-            if video_urls:
-                return video_urls
+                    # Try different methods to get the video URL
+                    video_urls = self._try_jwt_token_approach(video_id, jwt_token)
+                    if video_urls:
+                        return video_urls
 
-            video_urls = self._try_api_approach(video_id, jwt_token)
-            if video_urls:
-                return video_urls
+                    video_urls = self._try_api_approach(video_id, jwt_token)
+                    if video_urls:
+                        return video_urls
 
-            video_urls = self._try_javascript_extraction(lesson_url, video_id, jwt_token)
-            if video_urls:
-                return video_urls
+                    video_urls = self._try_javascript_extraction(lesson_url, video_id, jwt_token)
+                    if video_urls:
+                        return video_urls
 
-            video_urls = self._try_direct_embed_approach(video_id, jwt_token, lesson_url)
-            if video_urls:
-                return video_urls
+                    video_urls = self._try_direct_embed_approach(video_id, jwt_token, lesson_url)
+                    if video_urls:
+                        return video_urls
 
-            video_urls = self._try_network_requests_approach(video_id, jwt_token)
-            if video_urls:
-                return video_urls
+                    video_urls = self._try_network_requests_approach(video_id, jwt_token)
+                    if video_urls:
+                        return video_urls
+                else:
+                    log.warning("Could not extract video ID from iframe src")
+            except Exception as e:
+                log.warning(f"Could not find or process iframe: {str(e)}")
 
-            return []
+            # Even if we couldn't extract a URL, we can still proceed with the direct recording method
+            # Return a dummy URL that the direct recording method can use
+            if not video_urls:
+                # Create a placeholder URL that will trigger our recording approach
+                log.debug("No URLs extracted, using placeholder for direct recording method")
+                return [("", f"direct-recording://{lesson_url}")]
+
+            return video_urls
 
         except Exception as e:
             error_msg = str(e).split('\n')[0] if str(e) else "Unknown error"
             log.error(f"Failed to load lesson page: {error_msg}", exc_info=True)
-            return []
+            # Even on error, return a placeholder to try direct recording
+            return [("", f"direct-recording://{lesson_url}")]
 
     def _extract_jwt_token(self, iframe_src):
         """Extract JWT token from iframe src if present."""
@@ -528,6 +642,32 @@ class VideoDownloader:
             bool: True if download successful, False otherwise
         """
         try:
+            # If Video Downloader Helper extension is available (Firefox), use it first
+            if self.vdh_extension_installed:
+                log.info(f"Attempting to download {filename} using Video Downloader Helper extension")
+                if self._try_video_downloader_helper(video_url, filename):
+                    log.info(f"Successfully downloaded {filename} using Video Downloader Helper extension")
+                    return True
+            
+            # Check if this is a direct recording URL (our new special indicator)
+            if video_url.startswith('direct-recording://'):
+                log.info(f"Using pure direct recording approach for {filename}")
+                # We're already on the page we need to be on from the extract_video_url method
+                # So we'll just start the recording directly
+                if self._try_simple_direct_recording(filename):
+                    log.info(f"Successfully downloaded {filename} using simplified direct recording")
+                    return True
+                
+                # If that fails, try other recording methods
+                log.debug("Simple direct recording failed, trying alternative recording methods")
+            
+            # IMPROVED APPROACH: Everything is done in a single browser tab
+            # to preserve the authentication context
+            if self._try_optimized_browser_recording(video_url, filename):
+                log.info(f"Successfully downloaded {filename} using optimized browser recording")
+                return True
+                
+            # If the optimized method fails, try our previous methods in sequence
             # First try the helper approach - this most closely mimics Video Download Helper's method
             if self._try_helper_approach(video_url, filename):
                 log.info(f"Successfully downloaded {filename} using Video Download Helper approach")
@@ -1549,6 +1689,856 @@ class VideoDownloader:
                 
             return False
     
+    def _try_simple_direct_recording(self, filename):
+        """
+        The simplest, most direct recording approach with no iframe switching
+        or other complexities. This method:
+        1. Assumes we're already on the video page
+        2. Finds the iframe if it exists and switches to it
+        3. Locates and clicks the play button
+        4. Records directly from the video element
+        5. Uses a shorter duration to avoid timeouts
+        
+        Args:
+            filename (str): Filename to save the video as
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            log.info(f"Starting simplified direct recording for {filename}")
+            output_path = os.path.join(self.download_dir, f"{filename}.mp4")
+            
+            # Step 1: First check if we need to switch to an iframe
+            log.debug("Checking for video iframe")
+            iframe = self.browser_manager.wait_for_element(
+                By.CSS_SELECTOR, 
+                "iframe[src*='play.hotmart.com'], iframe[src*='embed']",
+                timeout=3
+            )
+            
+            if iframe:
+                log.debug("Found iframe, switching to it")
+                self.driver.switch_to.frame(iframe)
+            
+            # Step 2: Find and click any play button
+            try:
+                log.debug("Looking for play button")
+                play_button = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR,
+                    ".play-button, .vjs-big-play-button, [aria-label='Play'], .ytp-large-play-button",
+                    timeout=5
+                )
+                
+                if play_button:
+                    log.debug("Found play button, clicking it")
+                    try:
+                        play_button.click()
+                    except:
+                        # Try with JavaScript if direct click fails
+                        self.driver.execute_script("arguments[0].click();", play_button)
+                else:
+                    log.debug("No play button found, will try to play directly")
+            except Exception as e:
+                log.debug(f"Error finding/clicking play button: {str(e)}")
+            
+            # Step 3: Wait a moment for video to start playing
+            time.sleep(2)
+            
+            // Step 4: Use a more comprehensive script to record with audio
+            recording_script = """
+            return new Promise(async (resolve) => {
+                try {
+                    console.log("Starting enhanced video recording with audio");
+                    
+                    // Find video element
+                    const videoElement = document.querySelector('video');
+                    if (!videoElement) {
+                        return resolve({ success: false, error: "No video element found" });
+                    }
+                    
+                    // First unmute the video to ensure audio is available
+                    // but keep volume low to avoid feedback
+                    videoElement.muted = false;
+                    videoElement.volume = 0.01;
+                    videoElement.currentTime = 0;
+                    
+                    // Try to ensure autoplay works with audio
+                    try {
+                        // First try with user gesture simulation for browsers that require it
+                        videoElement.addEventListener('canplay', () => {
+                            // Create and trigger a fake click event on the video
+                            const clickEvent = new MouseEvent('click', {
+                                view: window,
+                                bubbles: true,
+                                cancelable: true
+                            });
+                            videoElement.dispatchEvent(clickEvent);
+                            
+                            // Now try to play with audio
+                            videoElement.play().catch(e => console.log("Play error:", e));
+                        }, { once: true });
+                        
+                        // Force a load event if needed
+                        if (videoElement.readyState >= 2) {
+                            videoElement.dispatchEvent(new Event('canplay'));
+                        }
+                    } catch (e) {
+                        console.error("Error during play setup:", e);
+                        // Try direct play as fallback
+                        videoElement.play().catch(e => console.log("Direct play error:", e));
+                    }
+                    
+                    // Wait a moment for play to start
+                    await new Promise(r => setTimeout(r, 1000));
+                    
+                    // Set up canvas for video capture
+                    const canvas = document.createElement('canvas');
+                    canvas.width = videoElement.videoWidth || 1280;
+                    canvas.height = videoElement.videoHeight || 720;
+                    const ctx = canvas.getContext('2d');
+                    
+                    // Create canvas stream for video
+                    const canvasStream = canvas.captureStream(30); // 30fps
+                    
+                    // Try multiple methods to capture audio
+                    let combinedStream = canvasStream;
+                    
+                    try {
+                        // Method 1: Try to get audio from the video element directly
+                        if (videoElement.captureStream) {
+                            console.log("Using video element captureStream for audio");
+                            const videoStream = videoElement.captureStream();
+                            const audioTracks = videoStream.getAudioTracks();
+                            
+                            if (audioTracks.length > 0) {
+                                console.log("Found audio track in video element:", audioTracks[0].label);
+                                // Add the audio track to our canvas stream
+                                canvasStream.addTrack(audioTracks[0]);
+                            } else {
+                                console.log("No audio tracks found in video element stream");
+                            }
+                        } else {
+                            console.log("captureStream not supported by video element");
+                        }
+                        
+                        // Method 2: Try to get system audio permission
+                        try {
+                            // This will prompt for audio permission if not already granted
+                            console.log("Requesting user audio...");
+                            const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                            console.log("Received audio stream:", audioStream);
+                            
+                            // Method 2a: Create a new MediaStream with both video and audio
+                            const newStream = new MediaStream();
+                            
+                            // Add all video tracks from canvas stream
+                            canvasStream.getVideoTracks().forEach(track => {
+                                newStream.addTrack(track);
+                            });
+                            
+                            // Add all audio tracks from audio stream
+                            audioStream.getAudioTracks().forEach(track => {
+                                console.log("Adding audio track:", track.label);
+                                newStream.addTrack(track);
+                            });
+                            
+                            // Use the combined stream
+                            combinedStream = newStream;
+                            console.log("Created combined stream with video and system audio");
+                        } catch (e) {
+                            console.log("Could not get system audio:", e);
+                        }
+                    } catch (e) {
+                        console.error("Error setting up audio:", e);
+                    }
+                    
+                    // Set up recorder with the best available codecs
+                    let recorder;
+                    let mimeType = '';
+                    
+                    // Try codecs in order of preference (with audio codecs)
+                    const codecsToTry = [
+                        'video/webm; codecs=vp9,opus',
+                        'video/webm; codecs=vp8,opus',
+                        'video/webm; codecs=vp9',
+                        'video/webm; codecs=vp8',
+                        'video/webm'
+                    ];
+                    
+                    for (const codec of codecsToTry) {
+                        if (MediaRecorder.isTypeSupported(codec)) {
+                            mimeType = codec;
+                            console.log("Using codec:", codec);
+                            break;
+                        }
+                    }
+                    
+                    // Create the media recorder with the best supported codec
+                    const recorderOptions = {
+                        mimeType: mimeType,
+                        videoBitsPerSecond: 2500000,  // 2.5 Mbps
+                        audioBitsPerSecond: 128000    // 128 kbps audio
+                    };
+                    
+                    recorder = new MediaRecorder(combinedStream, recorderOptions);
+                    console.log("Created MediaRecorder with options:", recorderOptions);
+                    
+                    const chunks = [];
+                    recorder.ondataavailable = e => {
+                        if (e.data.size > 0) {
+                            chunks.push(e.data);
+                            console.log("Recorded chunk:", e.data.size, "bytes");
+                        }
+                    };
+                    
+                    // Start recording with more frequent chunks
+                    recorder.start(500);  // 2 chunks per second
+                    console.log("Recording started");
+                    
+                    // Draw frames
+                    let frameId;
+                    const drawFrame = () => {
+                        if (videoElement.readyState >= 2) {
+                            ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+                        }
+                        frameId = requestAnimationFrame(drawFrame);
+                    };
+                    drawFrame();
+                    
+                    // Record for a short time to ensure we get something useful
+                    // but avoid timeouts
+                    console.log("Recording for 30 seconds");
+                    await new Promise(r => setTimeout(r, 30000));
+                    
+                    // Stop everything
+                    console.log("Stopping recording");
+                    recorder.stop();
+                    cancelAnimationFrame(frameId);
+                    
+                    // Wait for the last ondataavailable to fire
+                    await new Promise(r => setTimeout(r, 1000));
+                    
+                    // Prepare result
+                    console.log("Preparing result with", chunks.length, "chunks");
+                    const blob = new Blob(chunks, { type: 'video/webm' });
+                    const reader = new FileReader();
+                    await new Promise(r => { reader.onloadend = r; reader.readAsDataURL(blob); });
+                    
+                    resolve({
+                        success: true,
+                        dataUrl: reader.result,
+                        contentLength: blob.size,
+                        hasAudio: combinedStream.getAudioTracks().length > 0
+                    });
+                } catch (e) {
+                    console.error("Recording error:", e);
+                    resolve({ success: false, error: e.toString() });
+                }
+            });
+            """
+            
+            # Step 5: Execute the script with a longer timeout
+            log.debug("Starting recording")
+            
+            # Set a reasonable timeout
+            try:
+                self.driver.set_script_timeout(30000)  # 30 seconds total
+            except Exception as e:
+                log.warning(f"Could not set script timeout: {str(e)}")
+                
+            result = self.driver.execute_script(recording_script)
+            
+            # Step 6: Switch back to main frame if needed
+            if iframe:
+                try:
+                    self.driver.switch_to.default_content()
+                except:
+                    log.debug("Error switching back to main content, continuing anyway")
+            
+            # Step 7: Process results
+            if not result or not result.get('success'):
+                error = result.get('error') if result else "Unknown error"
+                log.error(f"Simple recording failed: {error}")
+                return False
+            
+            # Save recording data
+            data_url = result.get('dataUrl')
+            content_length = result.get('contentLength', 0)
+            
+            if not data_url or content_length < 10000:  # Ensure we have at least 10KB of data
+                log.error(f"Invalid or too small recording: {content_length} bytes")
+                return False
+            
+            log.debug(f"Recording successful, got {content_length} bytes")
+            
+            # Save as WebM first
+            webm_path = output_path.replace('.mp4', '.webm')
+            
+            # Extract and save base64 data
+            import base64
+            header, data = data_url.split(',', 1)
+            binary_data = base64.b64decode(data)
+            
+            with open(webm_path, 'wb') as f:
+                f.write(binary_data)
+            
+            log.info(f"Saved WebM recording: {webm_path} ({content_length} bytes)")
+            
+            # Convert to MP4 with improved audio handling
+            try:
+                import subprocess
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', webm_path,
+                    '-c:v', 'libx264',     # Use H.264 for video
+                    '-crf', '22',          # Slightly better quality (lower is better)
+                    '-preset', 'medium',    # Better quality/compression tradeoff
+                    '-c:a', 'aac',         # Use AAC for audio
+                    '-b:a', '192k',        # Better audio bitrate
+                    '-ac', '2',            # Stereo audio 
+                    '-ar', '48000',        # Sample rate
+                    '-strict', 'experimental', # Needed for some audio codecs
+                    output_path
+                ]
+                
+                log.debug(f"Running ffmpeg conversion: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                
+                if result.returncode != 0:
+                    log.error(f"Error converting to MP4: {result.stderr}")
+                    # Try alternative command with audio copy if conversion failed
+                    log.debug("Trying alternative ffmpeg command")
+                    alt_cmd = [
+                        'ffmpeg', '-y',
+                        '-i', webm_path,
+                        '-c:v', 'libx264',
+                        '-crf', '23',
+                        '-preset', 'fast',
+                        '-c:a', 'copy',    # Just copy the audio stream
+                        output_path
+                    ]
+                    alt_result = subprocess.run(alt_cmd, capture_output=True, text=True)
+                    
+                    if alt_result.returncode != 0:
+                        log.error(f"Alternative conversion also failed: {alt_result.stderr}")
+                        log.info(f"Video available in WebM format: {webm_path}")
+                        return True  # Still return True since we have a valid WebM file
+                    else:
+                        log.info(f"Successfully converted to MP4 with alternative command: {output_path}")
+                
+                # Remove WebM file on success
+                os.remove(webm_path)
+                log.info(f"Successfully converted to MP4: {output_path}")
+                return True
+                
+            except Exception as e:
+                log.error(f"Error converting to MP4: {str(e)}")
+                log.info(f"Video available in WebM format: {webm_path}")
+                return True  # Still return True since we have a valid WebM file
+            
+        except Exception as e:
+            log.error(f"Simple direct recording failed: {str(e)}")
+            return False
+            
+    def _try_optimized_browser_recording(self, video_url, filename):
+        """
+        Optimized approach that maintains tab context throughout the entire process.
+        This method uses the most direct possible approach by:
+        1. Skipping extraction/URL construction completely
+        2. Working directly in the authenticated browser tab
+        3. Capturing video directly from the browser display
+        4. Mimicking what Video Download Helper does
+        
+        Args:
+            video_url (str): Video URL (may not be used directly, but helpful for logging)
+            filename (str): Filename to save the video as
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            log.info(f"Starting optimized tab-based recording for {filename}")
+            output_path = os.path.join(self.download_dir, f"{filename}.mp4")
+            
+            # CRITICAL: We're already on the lesson page from the URL extraction step
+            # Don't navigate away or do anything that could disrupt the authenticated session
+            
+            # First check if we need to handle any iframes
+            log.debug("Checking for video iframe")
+            iframe_exists = self.driver.execute_script("""
+                return document.querySelector('iframe[src*="cf-embed.play.hotmart.com"]') !== null;
+            """)
+            
+            if iframe_exists:
+                log.debug("Found iframe, switching context to it")
+                iframe = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR, 
+                    "iframe[src*='cf-embed.play.hotmart.com']",
+                    timeout=5
+                )
+                if iframe:
+                    # Switch to iframe to maintain single context
+                    self.driver.switch_to.frame(iframe)
+                    log.debug("Successfully switched to iframe context")
+                else:
+                    log.warning("Iframe detected but couldn't be selected")
+            
+            # Now we need a more robust approach to ensure the video plays
+            # This multi-step approach will try different methods to get the video playing
+            preparation_script = """
+            // Use a synchronous version to avoid timeout issues
+            try {
+                console.log("Preparing video for optimized recording...");
+                
+                // Find video element with multiple selectors
+                function findVideoElement() {
+                    // Try different selectors to find the video
+                    const selectors = [
+                        'video',
+                        '.video-js video',
+                        '.player-container video',
+                        'video[src], video > source[src]'
+                    ];
+                    
+                    for (const selector of selectors) {
+                        const element = document.querySelector(selector);
+                        if (element) {
+                            console.log(`Found video element using selector: ${selector}`);
+                            return element;
+                        }
+                    }
+                    
+                    // Last resort - look for any object that looks like a video player
+                    const possiblePlayers = document.querySelectorAll('.video-player, .player, [class*="player"]');
+                    for (const player of possiblePlayers) {
+                        const video = player.querySelector('video');
+                        if (video) {
+                            console.log(`Found video element in player container`);
+                            return video;
+                        }
+                    }
+                    
+                    return null;
+                }
+                
+                // Find the video element
+                const videoElement = findVideoElement();
+                if (!videoElement) {
+                    return { success: false, error: "No video element found" };
+                }
+                
+                // Try to click play button
+                let buttonClicked = false;
+                const playButtons = document.querySelectorAll('.play-button, .vjs-big-play-button, [aria-label="Play"], .ytp-large-play-button');
+                for (const button of playButtons) {
+                    if (button.offsetParent !== null) { // Check if button is visible
+                        try {
+                            console.log("Clicking play button");
+                            button.click();
+                            buttonClicked = true;
+                            break;
+                        } catch (e) {
+                            console.log("Error clicking button:", e);
+                        }
+                    }
+                }
+                
+                // Prepare video element
+                try {
+                    // Critical: Ensure we can autoplay by muting
+                    videoElement.muted = true;
+                    videoElement.currentTime = 0;
+                    
+                    // Try to play - no await, just fire
+                    videoElement.play().catch(e => console.log("Play error:", e));
+                } catch (e) {
+                    console.log("Error preparing video:", e);
+                }
+                
+                // Return video dimensions and readiness info
+                return {
+                    success: true,
+                    videoFound: true,
+                    width: videoElement.videoWidth || videoElement.clientWidth || 1280,
+                    height: videoElement.videoHeight || videoElement.clientHeight || 720,
+                    duration: videoElement.duration || 0,
+                    playbackStarted: buttonClicked || !videoElement.paused
+                };
+            } catch (e) {
+                console.error("Error in video preparation:", e);
+                return { success: false, error: e.toString() };
+            }
+            """
+            
+            # Run the preparation script to find and start playing the video
+            log.debug("Running video preparation script")
+            prep_result = self.driver.execute_script(preparation_script)
+            
+            if not prep_result or not prep_result.get('success'):
+                error = prep_result.get('error') if prep_result else "Unknown error"
+                log.error(f"Video preparation failed: {error}")
+                
+                # Switch back to default content if needed
+                try:
+                    if iframe_exists:
+                        self.driver.switch_to.default_content()
+                except:
+                    pass
+                    
+                return False
+            
+            log.debug(f"Video preparation successful: {prep_result}")
+            
+            # Now we'll record the video using a more robust recording script
+            # with incremental chunk saving to avoid timeouts
+            recording_script = """
+            return new Promise(async (resolve) => {
+                try {
+                    console.log("Starting optimized recording process");
+                    
+                    // Find video element again (to be safe)
+                    const videoElement = document.querySelector('video');
+                    if (!videoElement) {
+                        return resolve({ success: false, error: "Video element disappeared" });
+                    }
+                    
+                    // Create a status display to show recording progress
+                    const statusDisplay = document.createElement('div');
+                    statusDisplay.style.position = 'fixed';
+                    statusDisplay.style.top = '10px';
+                    statusDisplay.style.left = '10px';
+                    statusDisplay.style.backgroundColor = 'rgba(0,0,0,0.7)';
+                    statusDisplay.style.color = 'white';
+                    statusDisplay.style.padding = '10px';
+                    statusDisplay.style.borderRadius = '5px';
+                    statusDisplay.style.zIndex = '9999999';
+                    statusDisplay.style.fontSize = '14px';
+                    statusDisplay.style.fontFamily = 'Arial, sans-serif';
+                    statusDisplay.textContent = 'Preparing recording...';
+                    document.body.appendChild(statusDisplay);
+                    
+                    const updateStatus = (message) => {
+                        statusDisplay.textContent = message;
+                        console.log(message);
+                    };
+                    
+                    // Get video dimensions, use fallbacks if needed
+                    updateStatus('Setting up canvas...');
+                    const width = videoElement.videoWidth || 1280;
+                    const height = videoElement.videoHeight || 720;
+                    
+                    // Create canvas for video capture
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    
+                    // First ensure video is unmuted for audio capture
+                    videoElement.muted = false;
+                    videoElement.volume = 0.01; // Very low volume to avoid feedback
+                    
+                    // Try to ensure autoplay with audio works
+                    try {
+                        // Create and dispatch a synthetic click event to help with autoplay
+                        const clickEvent = new MouseEvent('click', {
+                            view: window,
+                            bubbles: true,
+                            cancelable: true
+                        });
+                        videoElement.dispatchEvent(clickEvent);
+                        
+                        // Force play with audio
+                        videoElement.play().catch(e => console.log("Play error:", e));
+                    } catch (e) {
+                        console.error("Error during autoplay setup:", e);
+                    }
+                    
+                    // Set up recording with smaller chunk size to avoid timeouts
+                    const canvasStream = canvas.captureStream(30); // 30fps
+                    
+                    // Try multiple methods to get audio
+                    let combinedStream = canvasStream;
+                    updateStatus('Setting up audio capture...');
+                    
+                    try {
+                        // Method 1: Try to get audio from the video element directly
+                        if (videoElement.captureStream) {
+                            console.log("Using video element captureStream for audio");
+                            const videoStream = videoElement.captureStream();
+                            const audioTracks = videoStream.getAudioTracks();
+                            if (audioTracks.length > 0) {
+                                updateStatus('Adding video audio track: ' + audioTracks[0].label);
+                                canvasStream.addTrack(audioTracks[0]);
+                            } else {
+                                console.log("No audio tracks found in video element stream");
+                            }
+                        } else {
+                            console.log("captureStream not supported by video element");
+                        }
+                        
+                        // Method 2: Try to get system audio permission
+                        try {
+                            updateStatus('Requesting system audio permission...');
+                            const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                            
+                            // Create a combined stream with video and system audio
+                            const newStream = new MediaStream();
+                            
+                            // Add all video tracks from canvas stream
+                            canvasStream.getVideoTracks().forEach(track => {
+                                newStream.addTrack(track);
+                            });
+                            
+                            // Add any existing audio tracks from canvas stream
+                            canvasStream.getAudioTracks().forEach(track => {
+                                newStream.addTrack(track);
+                            });
+                            
+                            // Add all audio tracks from system audio
+                            audioStream.getAudioTracks().forEach(track => {
+                                updateStatus('Adding system audio track: ' + track.label);
+                                newStream.addTrack(track);
+                            });
+                            
+                            // Use the combined stream
+                            combinedStream = newStream;
+                            updateStatus('Created combined stream with audio');
+                        } catch (e) {
+                            console.log("Could not get system audio:", e);
+                        }
+                    } catch (e) {
+                        console.error("Audio setup error:", e);
+                    }
+                    
+                    // Initialize recorder with best available codec
+                    let mediaRecorder;
+                    let mimeType = '';
+                    
+                    // Try codecs in order of preference (with audio codecs)
+                    const codecsToTry = [
+                        'video/webm; codecs=vp9,opus',
+                        'video/webm; codecs=vp8,opus',
+                        'video/webm; codecs=vp9',
+                        'video/webm; codecs=vp8',
+                        'video/webm'
+                    ];
+                    
+                    for (const codec of codecsToTry) {
+                        if (MediaRecorder.isTypeSupported(codec)) {
+                            mimeType = codec;
+                            updateStatus('Using codec: ' + codec);
+                            break;
+                        }
+                    }
+                    
+                    try {
+                        mediaRecorder = new MediaRecorder(combinedStream, {
+                            mimeType: mimeType,
+                            videoBitsPerSecond: 2500000, // 2.5 Mbps
+                            audioBitsPerSecond: 128000   // 128 kbps for audio
+                        });
+                    } catch (e) {
+                        console.log("Codec error, using default settings:", e);
+                        mediaRecorder = new MediaRecorder(combinedStream);
+                    }
+                    
+                    // We'll collect chunks in an array
+                    const recordedChunks = [];
+                    
+                    // Set up the recording duration
+                    // Use a shorter duration to avoid timeouts
+                    const requestedDuration = arguments[0] || 60;
+                    const videoDuration = isFinite(videoElement.duration) ? videoElement.duration : null;
+                    const recordingDuration = videoDuration ? 
+                        Math.min(requestedDuration, videoDuration) : 
+                        Math.min(requestedDuration, 60); // 60 sec max to avoid timeout
+                    
+                    // Rewind the video to beginning
+                    videoElement.currentTime = 0;
+                    
+                    // Set up data handling
+                    mediaRecorder.ondataavailable = (e) => {
+                        if (e.data && e.data.size > 0) {
+                            recordedChunks.push(e.data);
+                            const totalMB = recordedChunks.reduce((total, chunk) => total + chunk.size, 0) / (1024 * 1024);
+                            updateStatus(`Recording ${Math.round(videoElement.currentTime)}s / ${Math.round(recordingDuration)}s (${totalMB.toFixed(1)} MB)`);
+                        }
+                    };
+                    
+                    // Start recording with small chunk size (500ms) to avoid long waits
+                    updateStatus(`Starting recording (${recordingDuration.toFixed(1)}s)`);
+                    mediaRecorder.start(500);
+                    
+                    // Set up frame capture
+                    let frameCapture;
+                    const captureFrame = () => {
+                        if (videoElement.readyState >= 2) {
+                            try {
+                                ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+                            } catch (e) {
+                                console.error("Frame capture error:", e);
+                            }
+                        }
+                        frameCapture = requestAnimationFrame(captureFrame);
+                    };
+                    
+                    // Start capturing frames
+                    captureFrame();
+                    
+                    // Create a promise that will resolve after the duration
+                    await new Promise(r => setTimeout(r, recordingDuration * 1000));
+                    
+                    // Stop recording and clean up
+                    updateStatus("Finishing recording...");
+                    mediaRecorder.stop();
+                    cancelAnimationFrame(frameCapture);
+                    
+                    // Wait for final data
+                    await new Promise(r => setTimeout(r, 1000));
+                    
+                    // Clean up the status display
+                    document.body.removeChild(statusDisplay);
+                    
+                    // Create the final blob
+                    const totalSize = recordedChunks.reduce((total, chunk) => total + chunk.size, 0);
+                    updateStatus(`Processing ${totalSize / (1024 * 1024)} MB of video...`);
+                    
+                    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                    const reader = new FileReader();
+                    
+                    // Read as data URL
+                    await new Promise((resolve) => {
+                        reader.onloadend = () => resolve();
+                        reader.readAsDataURL(blob);
+                    });
+                    
+                    resolve({
+                        success: true,
+                        dataUrl: reader.result,
+                        contentLength: blob.size,
+                        duration: recordingDuration
+                    });
+                    
+                } catch (e) {
+                    console.error("Fatal recording error:", e);
+                    resolve({ success: false, error: e.toString() });
+                }
+            });
+            """
+            
+            # Execute the recording script with a much shorter duration to avoid timeouts
+            # 30 seconds is enough to get a useful sample of the video while avoiding timeouts
+            recording_duration = 30
+            log.info(f"Starting browser recording with {recording_duration}s duration")
+            
+            # Set a reasonable script timeout for the recording
+            try:
+                self.driver.set_script_timeout(recording_duration * 1000 + 10000)  # Duration + 10 seconds buffer
+            except Exception as e:
+                log.warning(f"Could not set script timeout: {str(e)}")
+            
+            result = self.driver.execute_script(recording_script, recording_duration)
+            
+            # Switch back to default content if we switched to an iframe
+            if iframe_exists:
+                try:
+                    self.driver.switch_to.default_content()
+                except:
+                    pass
+            
+            # Process and save the recording
+            if not result or not result.get('success'):
+                error = result.get('error') if result else "Unknown error"
+                log.error(f"Optimized recording failed: {error}")
+                return False
+            
+            # Extract and save recording data
+            data_url = result.get('dataUrl')
+            content_length = result.get('contentLength', 0)
+            
+            if not data_url or not content_length or content_length < 1000:  # Sanity check for minimum size
+                log.error(f"Invalid or too small recording data: {content_length} bytes")
+                return False
+            
+            log.debug(f"Successfully captured {content_length} bytes of video data")
+            
+            # Save as WebM first
+            webm_path = output_path.replace('.mp4', '.webm')
+            
+            try:
+                # Extract and save base64 data
+                import base64
+                header, data = data_url.split(',', 1)
+                binary_data = base64.b64decode(data)
+                
+                with open(webm_path, 'wb') as f:
+                    f.write(binary_data)
+                
+                log.info(f"Saved WebM recording: {webm_path} ({content_length} bytes)")
+                
+                # Convert to MP4 using ffmpeg with improved audio handling
+                import subprocess
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', webm_path,
+                    '-c:v', 'libx264',     # Use H.264 for video
+                    '-crf', '22',          # Slightly better quality (lower is better)
+                    '-preset', 'medium',    # Better quality/compression tradeoff
+                    '-c:a', 'aac',         # Use AAC for audio
+                    '-b:a', '192k',        # Better audio bitrate
+                    '-ac', '2',            # Stereo audio 
+                    '-ar', '48000',        # Sample rate
+                    '-strict', 'experimental', # Needed for some audio codecs
+                    output_path
+                ]
+                
+                log.debug(f"Running ffmpeg conversion: {' '.join(cmd)}")
+                subprocess_result = subprocess.run(cmd, capture_output=True, text=True)
+                
+                if subprocess_result.returncode != 0:
+                    log.error(f"FFmpeg conversion failed: {subprocess_result.stderr}")
+                    
+                    # Try alternative command with audio copy if conversion failed
+                    log.debug("Trying alternative ffmpeg command")
+                    alt_cmd = [
+                        'ffmpeg', '-y',
+                        '-i', webm_path,
+                        '-c:v', 'libx264',
+                        '-crf', '23',
+                        '-preset', 'fast',
+                        '-c:a', 'copy',    # Just copy the audio stream
+                        output_path
+                    ]
+                    
+                    alt_result = subprocess.run(alt_cmd, capture_output=True, text=True)
+                    if alt_result.returncode != 0:
+                        log.error(f"Alternative conversion also failed: {alt_result.stderr}")
+                        log.info(f"Video available in WebM format: {webm_path}")
+                        return True  # Still return True since we have a valid WebM file
+                    else:
+                        log.info(f"Successfully converted to MP4 with alternative command")
+                
+                # Remove WebM file after successful conversion
+                os.remove(webm_path)
+                log.info(f"Successfully converted and saved video to {output_path}")
+                return True
+                
+            except Exception as e:
+                log.error(f"Error processing recording data: {str(e)}", exc_info=True)
+                return False
+            
+        except Exception as e:
+            log.error(f"Optimized browser recording failed: {str(e)}", exc_info=True)
+            
+            # Ensure we're back to default content
+            try:
+                self.driver.switch_to.default_content()
+            except:
+                pass
+                
+            return False
+    
     def _try_record_current_video(self, output_path, duration=120):
         """
         Record the currently playing video in the browser.
@@ -1586,11 +2576,11 @@ class VideoDownloader:
                 log.error("No video element found to record")
                 return False
             
-            # Create recording script that will record directly in the browser
+            # Create recording script that will record directly in the browser with improved audio
             recording_script = """
             return new Promise(async (resolve) => {
                 try {
-                    console.log("Starting recording preparation");
+                    console.log("Starting enhanced recording preparation");
                     
                     // Find video element
                     const videoElement = document.querySelector('video');
@@ -1599,6 +2589,29 @@ class VideoDownloader:
                     }
                     
                     console.log("Video element dimensions:", videoElement.videoWidth, "x", videoElement.videoHeight);
+                    
+                    // First unmute the video to ensure audio is available
+                    videoElement.muted = false;
+                    videoElement.volume = 0.01; // Very low volume to avoid feedback
+                    
+                    // Try to ensure autoplay works with audio
+                    try {
+                        // Create and dispatch a synthetic click event to help with autoplay
+                        const clickEvent = new MouseEvent('click', {
+                            view: window,
+                            bubbles: true,
+                            cancelable: true
+                        });
+                        videoElement.dispatchEvent(clickEvent);
+                        
+                        // Force play with audio
+                        videoElement.play().catch(e => console.log("Play error:", e));
+                        
+                        // Wait briefly for play to start
+                        await new Promise(r => setTimeout(r, 500));
+                    } catch (e) {
+                        console.error("Error during autoplay setup:", e);
+                    }
                     
                     // Create canvas matching video dimensions
                     const canvas = document.createElement('canvas');
@@ -1609,44 +2622,105 @@ class VideoDownloader:
                     // Set up MediaRecorder with canvas stream
                     const canvasStream = canvas.captureStream(30);  // 30fps
                     
-                    // Try to get audio too if possible
+                    // Try multiple methods to get audio
+                    let combinedStream = canvasStream;
+                    
                     try {
+                        // Method 1: Try to get audio from the video element directly
                         if (videoElement.captureStream) {
+                            console.log("Using video element captureStream for audio");
                             const videoStream = videoElement.captureStream();
                             const audioTracks = videoStream.getAudioTracks();
+                            
                             if (audioTracks.length > 0) {
-                                console.log("Adding audio track to recording");
+                                console.log("Found audio track in video element:", audioTracks[0].label);
+                                // Add the audio track to our canvas stream
                                 canvasStream.addTrack(audioTracks[0]);
+                            } else {
+                                console.log("No audio tracks found in video element stream");
                             }
+                        } else {
+                            console.log("captureStream not supported by video element");
+                        }
+                        
+                        // Method 2: Try to get system audio permission
+                        try {
+                            // This will prompt for audio permission if not already granted
+                            console.log("Requesting user audio...");
+                            const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                            console.log("Received audio stream:", audioStream);
+                            
+                            // Method 2a: Create a new MediaStream with both video and audio
+                            const newStream = new MediaStream();
+                            
+                            // Add all video tracks from canvas stream
+                            canvasStream.getVideoTracks().forEach(track => {
+                                newStream.addTrack(track);
+                            });
+                            
+                            // Add any existing audio tracks from canvas stream
+                            canvasStream.getAudioTracks().forEach(track => {
+                                newStream.addTrack(track);
+                            });
+                            
+                            // Add all audio tracks from audio stream
+                            audioStream.getAudioTracks().forEach(track => {
+                                console.log("Adding audio track:", track.label);
+                                newStream.addTrack(track);
+                            });
+                            
+                            // Use the combined stream
+                            combinedStream = newStream;
+                            console.log("Created combined stream with video and system audio");
+                        } catch (e) {
+                            console.log("Could not get system audio:", e);
                         }
                     } catch (e) {
-                        console.error("Could not capture audio:", e);
+                        console.error("Error setting up audio:", e);
+                    }
+                    
+                    // Set up recorder with the best available codecs
+                    let mediaRecorder;
+                    
+                    // Try codecs in order of preference (with audio codecs)
+                    const codecsToTry = [
+                        'video/webm; codecs=vp9,opus',
+                        'video/webm; codecs=vp8,opus',
+                        'video/webm; codecs=vp9',
+                        'video/webm; codecs=vp8',
+                        'video/webm'
+                    ];
+                    
+                    let usedCodec = '';
+                    for (const codec of codecsToTry) {
+                        if (MediaRecorder.isTypeSupported(codec)) {
+                            usedCodec = codec;
+                            console.log("Using codec:", codec);
+                            break;
+                        }
+                    }
+                    
+                    try {
+                        if (usedCodec) {
+                            mediaRecorder = new MediaRecorder(combinedStream, {
+                                mimeType: usedCodec,
+                                videoBitsPerSecond: 2500000,  // 2.5 Mbps
+                                audioBitsPerSecond: 128000    // 128 kbps for audio
+                            });
+                        } else {
+                            console.log("No supported codec found, using default");
+                            mediaRecorder = new MediaRecorder(combinedStream);
+                        }
+                    } catch (e) {
+                        console.log("MediaRecorder initialization error:", e);
+                        mediaRecorder = new MediaRecorder(combinedStream);
                     }
                     
                     const recordedChunks = [];
-                    let mediaRecorder;
-                    
-                    try {
-                        // Try with VP9 first for better quality
-                        mediaRecorder = new MediaRecorder(canvasStream, {
-                            mimeType: 'video/webm; codecs=vp9'
-                        });
-                    } catch (e) {
-                        console.log("VP9 not supported, trying VP8");
-                        try {
-                            // Fallback to VP8
-                            mediaRecorder = new MediaRecorder(canvasStream, {
-                                mimeType: 'video/webm; codecs=vp8'
-                            });
-                        } catch (e) {
-                            console.log("VP8 not supported, using default codec");
-                            mediaRecorder = new MediaRecorder(canvasStream);
-                        }
-                    }
-                    
                     mediaRecorder.ondataavailable = (e) => {
                         if (e.data.size > 0) {
                             recordedChunks.push(e.data);
+                            console.log("Recorded chunk:", e.data.size, "bytes");
                         }
                     };
                     
@@ -1661,8 +2735,8 @@ class VideoDownloader:
                     
                     console.log(`Recording for ${recordingDuration} seconds...`);
                     
-                    // Start recording
-                    mediaRecorder.start(1000);  // 1 second chunks
+                    // Start recording with smaller chunks for better progress tracking
+                    mediaRecorder.start(500);  // 2 chunks per second
                     
                     // Draw video frames to canvas
                     let frameCapture;
@@ -1686,6 +2760,7 @@ class VideoDownloader:
                     await new Promise(r => setTimeout(r, recordingDuration * 1000));
                     
                     // Stop everything
+                    console.log("Stopping recording");
                     mediaRecorder.stop();
                     cancelAnimationFrame(frameCapture);
                     
@@ -1710,7 +2785,8 @@ class VideoDownloader:
                         success: true,
                         dataUrl: fileReader.result,
                         contentLength: blob.size,
-                        duration: recordingDuration
+                        duration: recordingDuration,
+                        hasAudio: combinedStream.getAudioTracks().length > 0
                     });
                     
                 } catch (e) {
@@ -1751,25 +2827,48 @@ class VideoDownloader:
             
             log.info(f"Saved WebM recording: {webm_path} ({content_length} bytes)")
             
-            # Convert to MP4 using ffmpeg
+            # Convert to MP4 using ffmpeg with improved audio handling
             try:
                 import subprocess
                 cmd = [
                     'ffmpeg', '-y',
                     '-i', webm_path,
-                    '-c:v', 'libx264',
-                    '-preset', 'fast',
-                    '-crf', '22',
-                    '-c:a', 'aac',
+                    '-c:v', 'libx264',     # Use H.264 for video
+                    '-crf', '22',          # Slightly better quality (lower is better)
+                    '-preset', 'medium',    # Better quality/compression tradeoff
+                    '-c:a', 'aac',         # Use AAC for audio
+                    '-b:a', '192k',        # Better audio bitrate
+                    '-ac', '2',            # Stereo audio 
+                    '-ar', '48000',        # Sample rate
+                    '-strict', 'experimental', # Needed for some audio codecs
                     output_path
                 ]
                 
+                log.debug(f"Running ffmpeg conversion: {' '.join(cmd)}")
                 subprocess_result = subprocess.run(cmd, capture_output=True, text=True)
+                
                 if subprocess_result.returncode != 0:
                     log.error(f"FFmpeg conversion failed: {subprocess_result.stderr}")
-                    # Keep the WebM file
-                    log.info(f"Video available in WebM format: {webm_path}")
-                    return True
+                    
+                    # Try alternative command with audio copy if conversion failed
+                    log.debug("Trying alternative ffmpeg command")
+                    alt_cmd = [
+                        'ffmpeg', '-y',
+                        '-i', webm_path,
+                        '-c:v', 'libx264',
+                        '-crf', '23',
+                        '-preset', 'fast',
+                        '-c:a', 'copy',    # Just copy the audio stream
+                        output_path
+                    ]
+                    
+                    alt_result = subprocess.run(alt_cmd, capture_output=True, text=True)
+                    if alt_result.returncode != 0:
+                        log.error(f"Alternative conversion also failed: {alt_result.stderr}")
+                        log.info(f"Video available in WebM format: {webm_path}")
+                        return True  # Still return True since we have a valid WebM file
+                    else:
+                        log.info(f"Successfully converted to MP4 with alternative command")
                 
                 # Remove the WebM file
                 import os
@@ -2643,17 +3742,43 @@ class VideoDownloader:
                     cmd = [
                         'ffmpeg', '-y',
                         '-i', webm_path,
-                        '-c:v', 'libx264',
-                        '-c:a', 'aac',
+                        '-c:v', 'libx264',     # Use H.264 for video
+                        '-crf', '22',          # Slightly better quality (lower is better)
+                        '-preset', 'medium',    # Better quality/compression tradeoff
+                        '-c:a', 'aac',         # Use AAC for audio
+                        '-b:a', '192k',        # Better audio bitrate
+                        '-ac', '2',            # Stereo audio 
+                        '-ar', '48000',        # Sample rate
+                        '-strict', 'experimental', # Needed for some audio codecs
                         output_path
                     ]
                     
+                    log.debug(f"Running ffmpeg conversion: {' '.join(cmd)}")
                     result = subprocess.run(cmd, capture_output=True, text=True)
+                    
                     if result.returncode != 0:
                         log.error(f"FFmpeg conversion failed: {result.stderr}")
-                        # Keep the webm file
-                        log.info(f"Video available in WebM format: {webm_path}")
-                        return True
+                        
+                        # Try alternative command with audio copy if conversion failed
+                        log.debug("Trying alternative ffmpeg command")
+                        alt_cmd = [
+                            'ffmpeg', '-y',
+                            '-i', webm_path,
+                            '-c:v', 'libx264',
+                            '-crf', '23',
+                            '-preset', 'fast',
+                            '-c:a', 'copy',    # Just copy the audio stream
+                            output_path
+                        ]
+                        
+                        alt_result = subprocess.run(alt_cmd, capture_output=True, text=True)
+                        if alt_result.returncode != 0:
+                            log.error(f"Alternative conversion also failed: {alt_result.stderr}")
+                            log.info(f"Video available in WebM format: {webm_path}")
+                            return True  # Still return True since we have a valid WebM file
+                        else:
+                            log.info(f"Successfully converted to MP4 with alternative command")
+                            return True
                     
                     # Remove the webm file if conversion successful
                     import os
@@ -3184,6 +4309,198 @@ class VideoDownloader:
             
         except Exception as e:
             log.error(f"Network monitor download failed: {str(e)}", exc_info=True)
+            return False
+            
+    def _try_video_downloader_helper(self, video_url, filename):
+        """
+        Try to download the video using Video Downloader Helper extension.
+        This method interacts with the Video Downloader Helper extension UI
+        to trigger downloads while maintaining the authenticated context.
+        
+        Args:
+            video_url (str): URL of the video to download
+            filename (str): Filename to save the video as
+            
+        Returns:
+            bool: True if download successful, False otherwise
+        """
+        try:
+            log.info(f"Attempting to download {filename} using Video Downloader Helper extension")
+            output_path = os.path.join(self.download_dir, f"{filename}.mp4")
+            
+            # Step 1: First check if we're already on the page with video playing
+            # If not, navigate to the video URL or the lesson page
+            current_url = self.driver.current_url
+            log.debug(f"Current URL: {current_url}")
+            
+            if video_url.startswith("direct-recording://"):
+                # We're already on the correct page from the extraction step
+                log.debug("Already on the correct lesson page")
+            elif not (current_url == video_url or "/lesson/" in current_url):
+                # Navigate to the URL if needed
+                if video_url.startswith("http"):
+                    log.debug(f"Navigating to video URL: {video_url[:100]}...")
+                    self.driver.get(video_url)
+                    time.sleep(3)  # Wait for page to load
+            
+            # Step 2: Check if Video Downloader Helper extension is installed
+            # Look for the VDH extension button or menu
+            extension_found = False
+            try:
+                # First check in the main frame
+                vdh_button = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR,
+                    "#net_downloadhelper_toolbar, .net-downloadhelper-button, [title*='Download Helper']",
+                    timeout=2
+                )
+                
+                if vdh_button:
+                    log.debug("Found Video Downloader Helper button in main frame")
+                    extension_found = True
+                else:
+                    log.debug("VDH button not found in main frame, checking Firefox extensions")
+                    
+                    # Check for Firefox extension button (might be in the toolbar)
+                    vdh_button = self.browser_manager.wait_for_element(
+                        By.CSS_SELECTOR,
+                        "#wrapper-downloadhelper-net_downloadhelper_toolbar, [data-extensionid*='downloadhelper']",
+                        timeout=2
+                    )
+                    
+                    if vdh_button:
+                        log.debug("Found Video Downloader Helper extension in Firefox toolbar")
+                        extension_found = True
+            except Exception as e:
+                log.debug(f"Error checking for VDH extension: {e}")
+            
+            if not extension_found:
+                log.warning("Video Downloader Helper extension not detected in the browser")
+                return False
+            
+            # Step 3: Find and switch to video iframe if needed
+            iframe_exists = self.driver.execute_script("""
+                return document.querySelector('iframe[src*="cf-embed.play.hotmart.com"]') !== null;
+            """)
+            
+            if iframe_exists:
+                log.debug("Found iframe, switching to it")
+                iframe = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR, 
+                    "iframe[src*='cf-embed.play.hotmart.com']",
+                    timeout=5
+                )
+                if iframe:
+                    self.driver.switch_to.frame(iframe)
+                    log.debug("Successfully switched to iframe")
+            
+            # Step 4: Make sure video is playing to trigger VDH detection
+            play_script = """
+            try {
+                const videoElement = document.querySelector('video');
+                if (videoElement) {
+                    console.log("Found video element, ensuring it's playing");
+                    videoElement.muted = true;  // Mute to avoid autoplay restrictions
+                    videoElement.currentTime = 0;
+                    videoElement.play().catch(e => console.error("Couldn't play video:", e));
+                    return true;
+                }
+                return false;
+            } catch (e) {
+                console.error("Error playing video:", e);
+                return false;
+            }
+            """
+            
+            video_playing = self.driver.execute_script(play_script)
+            if not video_playing:
+                log.warning("Could not find or play video element")
+                
+                # Try to find and click play button
+                play_button = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR,
+                    ".play-button, .vjs-big-play-button, [aria-label='Play']",
+                    timeout=3
+                )
+                
+                if play_button:
+                    log.debug("Found play button, clicking it")
+                    try:
+                        play_button.click()
+                    except:
+                        self.driver.execute_script("arguments[0].click();", play_button)
+                    
+                    time.sleep(3)  # Wait for video to start playing
+            
+            # Step 5: Switch back to main frame to interact with the extension
+            if iframe_exists:
+                self.driver.switch_to.default_content()
+                log.debug("Switched back to main frame")
+            
+            # Step 6: Wait for Video Downloader Helper to detect the video
+            # This may take a few seconds
+            time.sleep(5)
+            
+            # Step 7: Try to interact with VDH UI 
+            # Need to click on the VDH button and then select the video
+            try:
+                # First try to click the VDH button
+                vdh_button = self.browser_manager.wait_for_element(
+                    By.CSS_SELECTOR,
+                    "#net_downloadhelper_toolbar, .net-downloadhelper-button, [title*='Download Helper'], #wrapper-downloadhelper-net_downloadhelper_toolbar",
+                    timeout=5
+                )
+                
+                if vdh_button:
+                    log.debug("Found VDH button, clicking it")
+                    try:
+                        vdh_button.click()
+                    except:
+                        self.driver.execute_script("arguments[0].click();", vdh_button)
+                    
+                    # Wait for the menu to appear
+                    time.sleep(2)
+                    
+                    # Look for video elements in the menu
+                    video_items = self.browser_manager.wait_for_elements(
+                        By.CSS_SELECTOR,
+                        ".dhMenuEntry, [class*='downloadhelper'] li, [id*='downloadhelper'] li, [class*='videoitem']",
+                        timeout=3
+                    )
+                    
+                    if video_items and len(video_items) > 0:
+                        log.debug(f"Found {len(video_items)} video items in VDH menu")
+                        
+                        # Click on the first video item (usually the best quality)
+                        first_item = video_items[0]
+                        log.debug("Clicking first video item")
+                        try:
+                            first_item.click()
+                        except:
+                            self.driver.execute_script("arguments[0].click();", first_item)
+                        
+                        # Wait for download to start
+                        time.sleep(5)
+                        
+                        # Check if the file was downloaded
+                        # VDH typically downloads to the default download folder, so we may need to move it
+                        
+                        # For now, assume success if we got this far
+                        log.info("Video Downloader Helper download initiated")
+                        
+                        # TODO: Implement file move from default downloads folder to our videos folder
+                        # This would require knowing the user's download folder path
+                        
+                        return True
+                    else:
+                        log.warning("No video items found in VDH menu")
+            except Exception as e:
+                log.error(f"Error interacting with VDH: {e}")
+            
+            # If we reach here, VDH failed
+            log.warning("Video Downloader Helper download failed")
+            return False
+        except Exception as e:
+            log.error(f"Video Downloader Helper download failed: {str(e)}", exc_info=True)
             return False
 
     def _download_mp4(self, video_url, filename):

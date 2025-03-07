@@ -22,17 +22,21 @@ class BrowserManager:
     Manages browser initialization and provides common browser interaction methods.
     """
 
-    def __init__(self, headless=False, user_data_dir=None):
+    def __init__(self, headless=False, user_data_dir=None, browser_type="chrome", browser_profile=None):
         """
         Initialize the browser manager.
 
         Args:
             headless (bool): Whether to run browser in headless mode
             user_data_dir (str, optional): Path to user data directory for Chrome profile
+            browser_type (str): The browser to use ("chrome" or "firefox")
+            browser_profile (str, optional): Path to browser profile with extensions
         """
         self.driver = None
         self.headless = headless
         self.user_data_dir = user_data_dir
+        self.browser_profile = browser_profile
+        self.browser_type = browser_type.lower()
         self.base_url = "https://101karategames.club.hotmart.com"
 
     def initialize(self):
@@ -40,13 +44,16 @@ class BrowserManager:
         Initialize the browser with appropriate settings.
 
         Returns:
-            webdriver.Chrome: Initialized Chrome WebDriver
+            webdriver.Chrome/Firefox: Initialized WebDriver
         """
-        # Configure Chrome options
-        options = self._configure_chrome_options()
-
-        # Try multiple methods to initialize Chrome driver
-        self.driver = self._initialize_chrome_driver(options)
+        if self.browser_type == "firefox":
+            # Configure Firefox options and initialize
+            options = self._configure_firefox_options()
+            self.driver = self._initialize_firefox_driver(options)
+        else:
+            # Configure Chrome options and initialize
+            options = self._configure_chrome_options()
+            self.driver = self._initialize_chrome_driver(options)
 
         # Set window size and initialize cookies
         if self.driver:
@@ -89,6 +96,129 @@ class BrowserManager:
 
         return chrome_options
 
+    def _configure_firefox_options(self):
+        """
+        Configure Firefox options for optimal video streaming and automation.
+        
+        Returns:
+            webdriver.FirefoxOptions: Configured options
+        """
+        firefox_options = webdriver.FirefoxOptions()
+        
+        # Basic options for better automation
+        firefox_options.set_preference("browser.download.folderList", 2)
+        firefox_options.set_preference("browser.download.manager.showWhenStarting", False)
+        firefox_options.set_preference("browser.helperApps.neverAsk.saveToDisk", 
+                                      "video/mp4,video/x-matroska,video/webm,video/ogg,application/octet-stream,application/vnd.apple.mpegurl")
+        firefox_options.set_preference("media.volume_scale", "0.0")  # Mute audio
+        firefox_options.set_preference("media.autoplay.default", 0)  # Allow autoplay
+        firefox_options.set_preference("media.autoplay.blocking_policy", 0)  # Don't block autoplay
+        
+        # Set headless mode if requested
+        if self.headless:
+            firefox_options.add_argument("--headless")
+        
+        # Set Firefox profile if provided
+        # Note: We don't use set_preference for profile as it doesn't work correctly
+        # Instead, the profile is loaded directly in the _initialize_firefox_driver method
+        
+        # Add user agent to ensure compatibility
+        firefox_options.set_preference("general.useragent.override", 
+                                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/117.0")
+        
+        return firefox_options
+        
+    def _initialize_firefox_driver(self, options):
+        """
+        Initialize Firefox driver with multiple fallback methods.
+        
+        Args:
+            options (webdriver.FirefoxOptions): Firefox options
+            
+        Returns:
+            webdriver.Firefox: Firefox WebDriver instance or None if initialization fails
+        """
+        driver = None
+        
+        # Method 1: Try with browser profile if provided
+        if self.browser_profile:
+            try:
+                log.debug(f"Attempting to initialize Firefox driver with profile: {self.browser_profile}")
+                from selenium.webdriver.firefox.service import Service as FirefoxService
+                
+                # Use the Firefox profile that has the Video Downloader Helper extension installed
+                from selenium.webdriver.firefox.firefox_profile import FirefoxProfile
+                
+                # Create a Firefox profile object
+                firefox_profile = FirefoxProfile(self.browser_profile)
+                
+                # Add special preferences to ensure extensions are enabled
+                firefox_profile.set_preference("xpinstall.signatures.required", False)
+                firefox_profile.set_preference("extensions.autoDisableScopes", 0)
+                
+                # Create a driver with this profile
+                driver = webdriver.Firefox(firefox_profile=firefox_profile, options=options)
+                
+                # Log info about installed extensions
+                try:
+                    # Check for the Video Downloader Helper specifically
+                    extensions_script = """
+                    return {
+                        hasDownloadHelper: Boolean(document.querySelector(
+                            "#net_downloadhelper_toolbar, .net-downloadhelper-button, [title*='Download Helper'], #wrapper-downloadhelper-net_downloadhelper_toolbar"
+                        ))
+                    };
+                    """
+                    # Navigate to about:blank to execute the script
+                    driver.get("about:blank")
+                    time.sleep(1)
+                    extensions_info = driver.execute_script(extensions_script)
+                    
+                    if extensions_info.get('hasDownloadHelper'):
+                        log.info("Video Downloader Helper extension detected in Firefox")
+                    else:
+                        log.warning("Video Downloader Helper extension NOT found in Firefox profile")
+                except Exception as e:
+                    log.warning(f"Could not check for Video Downloader Helper extension: {e}")
+                log.info("Successfully initialized Firefox driver with provided profile")
+                return driver
+            except Exception as e:
+                log.warning(f"Failed to create Firefox driver with profile: {e}")
+        
+        # Method 2: Try system Firefox with GeckoDriverManager
+        try:
+            log.debug("Attempting to initialize Firefox driver with GeckoDriverManager")
+            from selenium.webdriver.firefox.service import Service as FirefoxService
+            from webdriver_manager.firefox import GeckoDriverManager
+            
+            service = FirefoxService(executable_path=GeckoDriverManager().install())
+            driver = webdriver.Firefox(service=service, options=options)
+            log.info("Successfully initialized Firefox driver with GeckoDriverManager")
+            return driver
+        except Exception as e:
+            log.warning(f"Failed to create Firefox driver with GeckoDriverManager: {e}")
+        
+        # Method 3: Try standard Firefox path by OS
+        try:
+            log.debug("Attempting to initialize Firefox driver with standard OS path")
+            from selenium.webdriver.firefox.service import Service as FirefoxService
+            
+            # Determine driver path based on operating system
+            if platform.system() == "Darwin":  # macOS
+                driver_path = "/usr/local/bin/geckodriver"
+            elif platform.system() == "Linux":
+                driver_path = "/usr/bin/geckodriver"
+            else:  # Windows
+                driver_path = "C:\\Program Files\\Mozilla Firefox\\geckodriver.exe"
+                
+            service = FirefoxService(executable_path=driver_path)
+            driver = webdriver.Firefox(service=service, options=options)
+            log.info("Successfully initialized Firefox driver with standard OS path")
+            return driver
+        except Exception as e:
+            log.error(f"All Firefox driver initialization methods failed: {e}", exc_info=True)
+            return None
+    
     def _initialize_chrome_driver(self, options):
         """
         Initialize Chrome driver with multiple fallback methods.
@@ -333,6 +463,33 @@ class BrowserManager:
         except Exception as e:
             log.warning(f"Error waiting for element {value}: {e}")
             return None
+    
+    def wait_for_elements(self, by, value, timeout=10, condition="presence"):
+        """
+        Wait for multiple elements to be available in the DOM.
+
+        Args:
+            by (selenium.webdriver.common.by.By): The method to locate the elements
+            value (str): The locator value
+            timeout (int): Maximum time to wait (seconds)
+            condition (str): Type of wait condition: "presence" or "visible"
+
+        Returns:
+            list: List of WebElements if found, empty list otherwise
+        """
+        try:
+            wait = WebDriverWait(self.driver, timeout)
+
+            if condition == "visible":
+                return wait.until(EC.visibility_of_all_elements_located((by, value)))
+            else:  # default to presence
+                return wait.until(EC.presence_of_all_elements_located((by, value)))
+        except TimeoutException:
+            log.warning(f"Timeout waiting for elements: {value} (condition: {condition})")
+            return []
+        except Exception as e:
+            log.warning(f"Error waiting for elements {value}: {e}")
+            return []
 
     def execute_javascript(self, script, *args):
         """
