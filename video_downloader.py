@@ -1745,7 +1745,7 @@ class VideoDownloader:
             # Step 3: Wait a moment for video to start playing
             time.sleep(2)
             
-            // Step 4: Use a more comprehensive script to record with audio
+            # Step 4: Use a more comprehensive script to record with audio
             recording_script = """
             return new Promise(async (resolve) => {
                 try {
