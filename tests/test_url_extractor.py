@@ -2,7 +2,7 @@
 Tests for the url_extractor module.
 """
 import pytest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock, call, ANY
 import responses
 import re
 
@@ -56,6 +56,79 @@ class TestJavaScriptGeneration:
                                             mock_trigger.assert_called_once()
                                             mock_resolution.assert_called_once()
 
+    def test_script_initialization(self):
+        """Test the script initialization part."""
+        script = URLExtractor._get_script_initialization()
+        assert "return new Promise" in script
+        assert "foundUrl = null" in script
+        assert "allUrls = []" in script
+        assert "videoId = null" in script
+        assert "authToken = null" in script
+        assert "jwtToken = null" in script
+
+    def test_token_extraction_script(self):
+        """Test the token extraction script part."""
+        script = URLExtractor._get_token_extraction_script()
+        assert "window.location.search" in script
+        assert "urlParams.has('jwt')" in script
+        assert "urlParams.get('jwt')" in script
+
+    def test_video_id_extraction_script(self):
+        """Test the video ID extraction script part."""
+        script = URLExtractor._get_video_id_extraction_script()
+        assert "document.querySelector('video')" in script
+        assert "videoElement.dataset.videoId" in script
+        assert "videoElement.play()" in script
+        assert "processUrl(videoElement.src)" in script
+
+    def test_jwt_token_handling_script(self):
+        """Test the JWT token handling script part."""
+        script = URLExtractor._get_jwt_token_handling_script()
+        assert "jwtToken && videoId" in script
+        assert "fetch(`https://cf-embed.play.hotmart.com/video/${videoId}/play?jwt=${jwtToken}`" in script
+        assert "then(response => response.json())" in script
+        assert "processUrl(data.url)" in script
+
+    def test_network_interception_script(self):
+        """Test the network interception script part."""
+        script = URLExtractor._get_network_interception_script()
+        assert "const hdntlRegex = /hdntl=exp=" in script
+        assert "performance.getEntries()" in script
+        assert "const origXHROpen = XMLHttpRequest.prototype.open" in script
+        assert "const origFetch = window.fetch" in script
+        assert "processUrl(url)" in script
+        
+    def test_url_processing_script(self):
+        """Test the URL processing script part."""
+        script = URLExtractor._get_url_processing_script()
+        assert "function processUrl(url)" in script
+        assert "const videoIdIndex = urlParts.findIndex(part => part === 'video')" in script
+        assert "const hdntlRegex = /hdntl=exp=" in script
+        assert "if (url.includes('/master') && url.includes('.m3u8'))" in script
+        assert "if (url.includes('.m3u8') && (url.includes('audio=') || url.includes('video='))" in script
+        
+    def test_video_source_script(self):
+        """Test the video source script part."""
+        script = URLExtractor._get_video_source_script()
+        assert "const videoSources = document.querySelectorAll('video source')" in script
+        assert "const sourceUrl = source.src" in script
+        assert "if (sourceUrl && sourceUrl.includes('vod-akm.play.hotmart.com'))" in script
+        
+    def test_trigger_video_script(self):
+        """Test the trigger video script part."""
+        script = URLExtractor._get_trigger_video_script()
+        assert "const playButtons = document.querySelectorAll('.play-button, button[aria-label=\"Play\"]" in script
+        assert "button.click()" in script
+        
+    def test_resolution_script(self):
+        """Test the resolution script part."""
+        script = URLExtractor._get_resolution_script()
+        assert "setTimeout(" in script
+        assert "if (videoId && authToken && !foundUrl)" in script
+        assert "foundUrl = `https://vod-akm.play.hotmart.com/video/${videoId}/hls/${videoId}-audio=2756-video=2292536.m3u8?${authToken}`" in script
+        assert "resolve({" in script
+        assert "}, 8000)" in script
+
 
 class TestExtractionResultProcessing:
     """Tests for extraction result processing."""
@@ -68,6 +141,23 @@ class TestExtractionResultProcessing:
         assert len(result) == 1
         assert result[0][0] == ""  # part suffix
         assert result[0][1] == sample_extraction_result['foundUrl']
+        
+    def test_try_found_url(self, sample_extraction_result):
+        """Test the _try_found_url helper method."""
+        video_urls = []
+        
+        # When foundUrl exists, it should return True and add the URL
+        result = URLExtractor._try_found_url(sample_extraction_result, video_urls)
+        assert result is True
+        assert len(video_urls) == 1
+        assert video_urls[0][0] == ""
+        assert video_urls[0][1] == sample_extraction_result['foundUrl']
+        
+        # When foundUrl doesn't exist, it should return False and not add anything
+        video_urls = []
+        result = URLExtractor._try_found_url({}, video_urls)
+        assert result is False
+        assert len(video_urls) == 0
 
     def test_process_extraction_result_with_video_id_and_auth_token(self):
         """Test processing extraction result with just video ID and auth token."""
@@ -85,6 +175,33 @@ class TestExtractionResultProcessing:
         # Should construct URL from video ID and auth token
         assert "12345" in result[0][1]
         assert "hdntl=test_token" in result[0][1]
+        
+    def test_try_construct_from_id_and_token(self):
+        """Test the _try_construct_from_id_and_token helper method."""
+        video_urls = []
+        
+        # When videoId and authToken exist, it should return True and add the URL
+        result_data = {
+            'videoId': '12345',
+            'authToken': 'hdntl=test_token'
+        }
+        result = URLExtractor._try_construct_from_id_and_token(result_data, video_urls)
+        assert result is True
+        assert len(video_urls) == 1
+        assert video_urls[0][0] == ""
+        assert "12345" in video_urls[0][1]
+        assert "hdntl=test_token" in video_urls[0][1]
+        
+        # When videoId or authToken doesn't exist, it should return False
+        video_urls = []
+        result = URLExtractor._try_construct_from_id_and_token({'videoId': '12345'}, video_urls)
+        assert result is False
+        assert len(video_urls) == 0
+        
+        video_urls = []
+        result = URLExtractor._try_construct_from_id_and_token({'authToken': 'hdntl=test_token'}, video_urls)
+        assert result is False
+        assert len(video_urls) == 0
 
     @patch('url_extractor.URLExtractor.get_url_from_api')
     def test_process_extraction_result_with_jwt_token(self, mock_get_url):
@@ -107,6 +224,53 @@ class TestExtractionResultProcessing:
         assert len(result) == 1
         assert result[0][0] == ""  # part suffix
         assert result[0][1] == "https://example.com/video.m3u8"
+        
+    @patch('url_extractor.URLExtractor.get_url_from_api')
+    def test_try_jwt_token_api(self, mock_get_url):
+        """Test the _try_jwt_token_api helper method."""
+        mock_get_url.return_value = "https://example.com/video.m3u8"
+        mock_session = MagicMock()
+        video_urls = []
+        
+        # When videoId, jwtToken and session exist, it should return True and add the URL
+        result_data = {
+            'videoId': '12345',
+            'jwtToken': 'sample_jwt_token'
+        }
+        result = URLExtractor._try_jwt_token_api(result_data, mock_session, video_urls)
+        assert result is True
+        assert len(video_urls) == 1
+        assert video_urls[0][0] == ""
+        assert video_urls[0][1] == "https://example.com/video.m3u8"
+        mock_get_url.assert_called_once_with('12345', mock_session, 'sample_jwt_token')
+        
+        # When get_url_from_api returns None, it should return False
+        mock_get_url.reset_mock()
+        mock_get_url.return_value = None
+        video_urls = []
+        result = URLExtractor._try_jwt_token_api(result_data, mock_session, video_urls)
+        assert result is False
+        assert len(video_urls) == 0
+        
+        # When videoId or jwtToken or session doesn't exist, it should return False
+        mock_get_url.reset_mock()
+        video_urls = []
+        result = URLExtractor._try_jwt_token_api({'videoId': '12345'}, mock_session, video_urls)
+        assert result is False
+        assert len(video_urls) == 0
+        mock_get_url.assert_not_called()
+        
+        video_urls = []
+        result = URLExtractor._try_jwt_token_api({'jwtToken': 'sample_jwt_token'}, mock_session, video_urls)
+        assert result is False
+        assert len(video_urls) == 0
+        mock_get_url.assert_not_called()
+        
+        video_urls = []
+        result = URLExtractor._try_jwt_token_api(result_data, None, video_urls)
+        assert result is False
+        assert len(video_urls) == 0
+        mock_get_url.assert_not_called()
 
     def test_process_extraction_result_with_master_url(self):
         """Test processing extraction result with master URL fallback."""
@@ -121,6 +285,26 @@ class TestExtractionResultProcessing:
         assert len(result) == 1
         assert result[0][0] == ""  # part suffix
         assert result[0][1] == "https://example.com/master.m3u8"
+        
+    def test_try_master_playlist(self):
+        """Test the _try_master_playlist helper method."""
+        video_urls = []
+        
+        # When masterUrl exists, it should return True and add the URL
+        result_data = {
+            'masterUrl': 'https://example.com/master.m3u8'
+        }
+        result = URLExtractor._try_master_playlist(result_data, video_urls)
+        assert result is True
+        assert len(video_urls) == 1
+        assert video_urls[0][0] == ""
+        assert video_urls[0][1] == "https://example.com/master.m3u8"
+        
+        # When masterUrl doesn't exist, it should return False
+        video_urls = []
+        result = URLExtractor._try_master_playlist({}, video_urls)
+        assert result is False
+        assert len(video_urls) == 0
 
     @patch('url_extractor.URLExtractor.get_url_from_api')
     def test_process_extraction_result_with_api_fallback(self, mock_get_url):
@@ -142,6 +326,46 @@ class TestExtractionResultProcessing:
         assert len(result) == 1
         assert result[0][0] == ""  # part suffix
         assert result[0][1] == "https://example.com/video_api.m3u8"
+        
+    @patch('url_extractor.URLExtractor.get_url_from_api')
+    def test_try_api_with_video_id(self, mock_get_url):
+        """Test the _try_api_with_video_id helper method."""
+        mock_get_url.return_value = "https://example.com/video_api.m3u8"
+        mock_session = MagicMock()
+        video_urls = []
+        
+        # When videoId and session exist, it should return True and add the URL
+        result_data = {
+            'videoId': '12345'
+        }
+        result = URLExtractor._try_api_with_video_id(result_data, mock_session, video_urls)
+        assert result is True
+        assert len(video_urls) == 1
+        assert video_urls[0][0] == ""
+        assert video_urls[0][1] == "https://example.com/video_api.m3u8"
+        mock_get_url.assert_called_once_with('12345', mock_session)
+        
+        # When get_url_from_api returns None, it should return False
+        mock_get_url.reset_mock()
+        mock_get_url.return_value = None
+        video_urls = []
+        result = URLExtractor._try_api_with_video_id(result_data, mock_session, video_urls)
+        assert result is False
+        assert len(video_urls) == 0
+        
+        # When videoId or session doesn't exist, it should return False
+        mock_get_url.reset_mock()
+        video_urls = []
+        result = URLExtractor._try_api_with_video_id({}, mock_session, video_urls)
+        assert result is False
+        assert len(video_urls) == 0
+        mock_get_url.assert_not_called()
+        
+        video_urls = []
+        result = URLExtractor._try_api_with_video_id(result_data, None, video_urls)
+        assert result is False
+        assert len(video_urls) == 0
+        mock_get_url.assert_not_called()
 
     def test_process_extraction_result_direct_construction(self):
         """Test processing extraction result with direct URL construction."""
@@ -162,6 +386,19 @@ class TestExtractionResultProcessing:
             # So we need to match against the correctly constructed path
             expected_url_part = f"{HOTMART_CDN_BASE}/12345/hls/12345-audio="
             assert expected_url_part in result[0][1]
+            
+    def test_construct_direct_url(self):
+        """Test the _construct_direct_url helper method."""
+        video_urls = []
+        
+        # Should always return True and add the URL
+        result = URLExtractor._construct_direct_url('12345', video_urls)
+        assert result is True
+        assert len(video_urls) == 1
+        assert video_urls[0][0] == ""
+        assert "12345" in video_urls[0][1]
+        expected_url_part = f"{HOTMART_CDN_BASE}/12345/hls/12345-audio="
+        assert expected_url_part in video_urls[0][1]
 
     def test_process_extraction_result_invalid_type(self):
         """Test processing extraction result with invalid data type."""
@@ -174,76 +411,101 @@ class TestExtractionResultProcessing:
         assert result == []
 
 
-@responses.activate
 class TestURLExtractionFromAPI:
     """Tests for URL extraction from API endpoints."""
 
-    def setup_method(self):
+    @pytest.fixture(autouse=True)
+    def setup(self, mock_api_session):
         """Set up common test variables."""
         self.video_id = "12345"
         self.jwt_token = "sample_jwt_token"
-        self.session = MagicMock()
-        self.session.get.return_value = MagicMock()
+        self.session = mock_api_session
+        
+    def test_jwt_token_api_endpoint_error(self):
+        """Test error handling in JWT token API endpoint."""
+        # Test with HTTP error
+        self.session.get.return_value.status_code = 404
+        url = URLExtractor._try_jwt_token_api_endpoint(self.video_id, self.session, self.jwt_token)
+        assert url is None
+        
+        # Test with JSON parsing error
         self.session.get.return_value.status_code = 200
-        self.session.get.return_value.json.return_value = {"url": "https://example.com/video.m3u8"}
-        self.session.get.return_value.text = "some content with hdntl=test_token"
+        self.session.get.return_value.json.side_effect = ValueError("Invalid JSON")
+        url = URLExtractor._try_jwt_token_api_endpoint(self.video_id, self.session, self.jwt_token)
+        assert url is None
+        
+        # Test with missing 'url' in response
+        self.session.get.return_value.json.side_effect = None
+        self.session.get.return_value.json.return_value = {"data": "no url"}
+        url = URLExtractor._try_jwt_token_api_endpoint(self.video_id, self.session, self.jwt_token)
+        assert url is None
 
     def test_jwt_token_api_endpoint(self):
         """Test getting URL using JWT token API endpoint."""
+        # Reset mock to ensure clean state after error tests
+        self.session.get.reset_mock()
+        self.session.get.return_value.status_code = 200
+        self.session.get.return_value.json.return_value = {"url": "https://example.com/video.m3u8"}
+        
         # Test the _try_jwt_token_api_endpoint method
         url = URLExtractor._try_jwt_token_api_endpoint(self.video_id, self.session, self.jwt_token)
         
         # Verify the correct endpoint was called
         jwt_api_url = f"https://cf-embed.play.hotmart.com/video/{self.video_id}/play?jwt={self.jwt_token}"
-        self.session.get.assert_called_once_with(jwt_api_url, headers=pytest.ANY)
+        self.session.get.assert_called_once_with(jwt_api_url, headers=ANY)
         
         # Verify the URL was returned
         assert url == "https://example.com/video.m3u8"
 
     def test_player_api(self):
         """Test getting URL using player API."""
+        # Reset mock
+        self.session.get.reset_mock()
+        
         # Test the _try_player_api method
         url = URLExtractor._try_player_api(self.video_id, self.session)
         
         # Verify the correct endpoint was called
         player_api_url = f"{HOTMART_PLAYER_API}/{self.video_id}/play"
-        self.session.get.assert_called_once_with(player_api_url, headers=pytest.ANY)
+        self.session.get.assert_called_once_with(player_api_url, headers=ANY)
         
         # Verify the URL was returned
         assert url == "https://example.com/video.m3u8"
 
     def test_club_api(self):
         """Test getting URL using club API."""
+        # Reset mock
+        self.session.get.reset_mock()
+        
         # Test the _try_club_api method
         url = URLExtractor._try_club_api(self.video_id, self.session)
         
         # Verify the correct endpoint was called
         club_api_url = f"{HOTMART_CLUB_API}/{self.video_id}/play"
-        self.session.get.assert_called_once_with(club_api_url, headers=pytest.ANY)
+        self.session.get.assert_called_once_with(club_api_url, headers=ANY)
         
         # Verify the URL was returned
         assert url == "https://example.com/video.m3u8"
 
     def test_embed_api(self):
         """Test getting URL using embed API."""
+        # Reset mock
+        self.session.get.reset_mock()
+        
         # Test the _try_embed_api method
         url = URLExtractor._try_embed_api(self.video_id, self.session)
         
         # Verify the correct endpoint was called
         embed_api_url = f"https://cf-embed.play.hotmart.com/video/{self.video_id}/play"
-        self.session.get.assert_called_once_with(embed_api_url, headers=pytest.ANY)
+        self.session.get.assert_called_once_with(embed_api_url, headers=ANY)
         
         # Verify the URL was returned
         assert url == "https://example.com/video.m3u8"
 
     def test_extract_from_embed_page(self):
         """Test extracting token from embed page and constructing URL."""
-        # Override the session text with content containing a token
-        self.session.get.return_value.text = """
-        <html><body><script>
-        var token = 'hdntl=exp=1234567890~acl=/*~data=hdntl~hmac=abc123';
-        </script></body></html>
-        """
+        # Reset mock
+        self.session.get.reset_mock()
         
         # Test the _try_extract_from_embed_page method
         with patch('url_extractor.extract_auth_token') as mock_extract:
@@ -253,7 +515,7 @@ class TestURLExtractionFromAPI:
             
             # Verify the correct URL was called
             embed_url = f"{HOTMART_EMBED_BASE}/{self.video_id}"
-            self.session.get.assert_called_once_with(embed_url, headers=pytest.ANY)
+            self.session.get.assert_called_once_with(embed_url, headers=ANY)
             
             # Verify token extraction was attempted
             mock_extract.assert_called_once_with(self.session.get.return_value.text)
@@ -314,3 +576,22 @@ class TestURLExtractionFromAPI:
                 
                 # Verify None was returned on error
                 assert url is None
+                
+    def test_extract_from_embed_page_error(self):
+        """Test error handling in extract from embed page."""
+        # Reset mock
+        self.session.get.reset_mock()
+        
+        # Test with HTTP error
+        self.session.get.return_value.status_code = 404
+        with patch('url_extractor.extract_auth_token') as mock_extract:
+            mock_extract.return_value = None
+            url = URLExtractor._try_extract_from_embed_page(self.video_id, self.session)
+            assert url is None
+            
+        # Test with token extraction failure
+        self.session.get.return_value.status_code = 200
+        with patch('url_extractor.extract_auth_token') as mock_extract:
+            mock_extract.return_value = None
+            url = URLExtractor._try_extract_from_embed_page(self.video_id, self.session)
+            assert url is None

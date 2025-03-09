@@ -94,3 +94,22 @@ def sample_extraction_result():
             'https://vod-akm.play.hotmart.com/video/12345/hls/12345.m3u8?hdntl=exp=1234567890~acl=/*~data=hdntl~hmac=abc123'
         ]
     }
+    
+@pytest.fixture
+def mock_api_session():
+    """Create a mock requests session for API testing."""
+    session = MagicMock(spec=requests.Session)
+    session.get.return_value = MagicMock()
+    session.get.return_value.status_code = 200
+    session.get.return_value.json.return_value = {"url": "https://example.com/video.m3u8"}
+    session.get.return_value.text = """
+    <html>
+    <body>
+      <script>
+        const token = 'hdntl=exp=1234567890~acl=/*~data=hdntl~hmac=abc123';
+        const url = 'https://vod-akm.play.hotmart.com/video/12345/hls/12345-audio=123-video=456.m3u8?' + token;
+      </script>
+    </body>
+    </html>
+    """
+    return session
