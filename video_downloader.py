@@ -5175,6 +5175,30 @@ class VideoDownloader:
 
         log.info(f"FFmpeg subprocess download completed: {output_path}")
 
+    def _apply_firefox_js_fixes(self, script=None):
+        """
+        Apply Firefox compatibility fixes to JavaScript.
+        Firefox does not support 'await' in execute_script, so we
+        need to convert async/await syntax to promise chains.
+        
+        Args:
+            script (str, optional): The script to fix. If None, return empty string.
+            
+        Returns:
+            str: The fixed script
+        """
+        if script is None:
+            return ""
+            
+        # Simple replacement of async/await patterns with Promise-based equivalents
+        fixed_script = script.replace("async function", "function")
+        fixed_script = fixed_script.replace("async () =>", "() =>")
+        
+        # This is a simple implementation - for a real solution, we'd need more complex
+        # parsing to properly transform async/await to Promise chains
+        
+        return fixed_script
+        
     def close(self):
         """Close the browser."""
         self.browser_manager.close()

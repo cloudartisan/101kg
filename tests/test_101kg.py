@@ -39,7 +39,7 @@ def test_main_successful_execution(monkeypatch):
     # Check the results
     assert result == 0  # Success exit code
     mock_setup_logger.assert_called()
-    mock_downloader_class.assert_called_once_with('test@example.com', 'password123', headless=False)
+    mock_downloader_class.assert_called_once_with('test@example.com', 'password123', headless=False, browser_type='chrome', browser_profile=None)
     mock_downloader.login.assert_called_once()
     mock_downloader.download_all_lessons.assert_called_once()
     mock_downloader.close.assert_called_once()
@@ -71,7 +71,7 @@ def test_main_login_failure(monkeypatch):
     # Check the results
     assert result == 1  # Error exit code
     mock_setup_logger.assert_called()
-    mock_downloader_class.assert_called_once_with('test@example.com', 'wrong_password', headless=False)
+    mock_downloader_class.assert_called_once_with('test@example.com', 'wrong_password', headless=False, browser_type='chrome', browser_profile=None)
     mock_downloader.login.assert_called_once()
     mock_downloader.download_all_lessons.assert_not_called()  # Should not be called on login failure
     mock_downloader.close.assert_called_once()  # Should still be called for cleanup
@@ -108,7 +108,7 @@ def test_main_with_verbose_and_headless(monkeypatch):
     
     # Check the results
     assert result == 0  # Success exit code
-    mock_downloader_class.assert_called_once_with('test@example.com', 'password123', headless=True)
+    mock_downloader_class.assert_called_once_with('test@example.com', 'password123', headless=True, browser_type='chrome', browser_profile=None)
     mock_downloader.login.assert_called_once()
     mock_downloader.download_all_lessons.assert_called_once()
     mock_downloader.close.assert_called_once()
