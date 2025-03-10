@@ -111,15 +111,65 @@ To run the unit tests:
 # Run all tests
 pytest
 
-# Run tests with coverage report
+# Run tests and check for failing tests (look for FAILED in output)
+pytest -v | grep FAILED || echo "All tests passed"
+
+# Generate coverage report for all modules
+pytest --cov=.
+
+# Get module-specific coverage reports
+pytest --cov=url_extractor
+pytest --cov=browser_manager
+pytest --cov=video_downloader
+
+# Generate detailed coverage report with line numbers of missing coverage
 pytest --cov=. --cov-report=term-missing
 
 # Run specific test file
 pytest tests/test_url_utils.py
 
-# Run tests by marker
-pytest -m "not slow"
+# Run specific test class or method
+pytest tests/test_url_extractor.py::TestJavaScriptGeneration
+pytest tests/test_url_extractor.py::TestJavaScriptGeneration::test_resolution_script
+
+# Run tests in verbose mode to see individual test results
+pytest -v
+
+# Generate HTML coverage report (creates htmlcov directory)
+pytest --cov=. --cov-report=html
 ```
+
+### Current Test Coverage Summary
+
+```
+Name                       Stmts   Miss  Cover
+----------------------------------------------
+101kg.py                     95     35    63%
+browser_manager.py          186     21    89%
+check_firefox.py             14      2    86%
+logger.py                    42      0   100%
+url_extractor.py            212      9    96%
+url_utils.py                 76      2    97%
+video_downloader.py        1034    380    63%
+tests/__init__.py             0      0   100%
+tests/conftest.py            60      0   100%
+tests/test_101kg.py          59      0   100%
+tests/test_audio.py          40      0   100%
+tests/test_browser_manager.py  140      0   100%
+tests/test_logger.py        107      1    99%
+tests/test_url_extractor.py  280      0   100%
+tests/test_url_utils.py       91      0   100%
+tests/test_video_downloader.py  498      0   100%
+----------------------------------------------
+TOTAL                      2934    450    85%
+```
+
+Key modules and their coverage:
+- **url_extractor.py**: 96% coverage (212 statements, 9 missed)
+- **url_utils.py**: 97% coverage (76 statements, 2 missed)
+- **browser_manager.py**: 89% coverage (186 statements, 21 missed)
+- **logger.py**: 100% coverage (42 statements, 0 missed)
+- **video_downloader.py**: 63% coverage (1034 statements, 380 missed)
 
 ## Notes
 - The script logs in, navigates to the lesson page, extracts the video URL, and downloads it.
