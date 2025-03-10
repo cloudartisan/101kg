@@ -1,6 +1,7 @@
 """
-Test script to verify audio recording in browser without login.
-This script navigates to a public video site and attempts to record with audio.
+Browser audio capture diagnostic tool.
+This script navigates to a public video site and attempts to record with audio
+to diagnose browser audio capture capabilities.
 """
 import os
 import time
@@ -13,8 +14,8 @@ from browser_manager import BrowserManager
 import logger
 log = logger
 
-def test_audio_recording():
-    """Test if browser can capture audio from a video element on a public site."""
+def diagnose_audio_capture():
+    """Diagnose if browser can capture audio from a video element on a public site."""
     # Initialize browser
     browser_manager = BrowserManager(headless=False, browser_type="chrome")
     driver = browser_manager.initialize()
@@ -36,7 +37,7 @@ def test_audio_recording():
         time.sleep(3)
         
         # Create output directory
-        output_dir = "audio_test"
+        output_dir = "audio_diagnostic_results"
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
         
@@ -245,4 +246,4 @@ def test_audio_recording():
             driver.quit()
 
 if __name__ == "__main__":
-    test_audio_recording()
+    diagnose_audio_capture()

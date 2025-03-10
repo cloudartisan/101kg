@@ -1,15 +1,19 @@
 """
-Test cases for the audio recording test script.
+Test cases for the browser audio diagnostic tool.
 """
 import os
+import sys
 import pytest
 from unittest.mock import patch, MagicMock, call
-import test_audio
+
+# Add scripts directory to import path
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts'))
+import browser_audio_diagnostic
 
 @pytest.fixture
 def mock_browser_manager():
     """Fixture for mocked BrowserManager."""
-    with patch('test_audio.BrowserManager') as mock_browser_class:
+    with patch('browser_audio_diagnostic.BrowserManager') as mock_browser_class:
         mock_manager = MagicMock()
         mock_browser_class.return_value = mock_manager
         yield mock_manager
@@ -20,8 +24,8 @@ def mock_driver():
     mock_driver = MagicMock()
     yield mock_driver
 
-def test_test_audio_recording_successful(mock_browser_manager, mock_driver):
-    """Test successful audio recording scenario."""
+def test_diagnose_audio_capture_successful(mock_browser_manager, mock_driver):
+    """Test successful audio capture diagnostic scenario."""
     # Setup the mock manager to return mock driver
     mock_browser_manager.initialize.return_value = mock_driver
     
@@ -46,7 +50,7 @@ def test_test_audio_recording_successful(mock_browser_manager, mock_driver):
          patch('subprocess.run') as mock_subprocess_run:
         
         # Call the function
-        test_audio.test_audio_recording()
+        browser_audio_diagnostic.diagnose_audio_capture()
         
         # Assertions
         mock_browser_manager.initialize.assert_called_once()
@@ -55,7 +59,7 @@ def test_test_audio_recording_successful(mock_browser_manager, mock_driver):
         
         # Verify directory creation - Note: log directory is also created
         assert mock_makedirs.call_count >= 1
-        assert call('audio_test') in mock_makedirs.call_args_list
+        assert call('audio_diagnostic_results') in mock_makedirs.call_args_list
         
         # Verify file writing
         mock_open.assert_called()
@@ -66,8 +70,8 @@ def test_test_audio_recording_successful(mock_browser_manager, mock_driver):
         # Verify browser was closed
         mock_driver.quit.assert_called_once()
         
-def test_test_audio_recording_failure(mock_browser_manager, mock_driver):
-    """Test failed audio recording scenario."""
+def test_diagnose_audio_capture_failure(mock_browser_manager, mock_driver):
+    """Test failed audio capture diagnostic scenario."""
     # Setup the mock manager to return mock driver
     mock_browser_manager.initialize.return_value = mock_driver
     
@@ -84,7 +88,7 @@ def test_test_audio_recording_failure(mock_browser_manager, mock_driver):
     
     # Call the function with mocks
     with patch('os.path.exists', return_value=True):
-        test_audio.test_audio_recording()
+        browser_audio_diagnostic.diagnose_audio_capture()
         
         # Assertions
         mock_browser_manager.initialize.assert_called_once()
