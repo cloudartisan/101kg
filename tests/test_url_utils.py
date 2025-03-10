@@ -46,7 +46,7 @@ class TestExtractVideoIdFromIframe:
 class TestExtractJwtToken:
     """Tests for extract_jwt_token function."""
 
-    def test_jwt_token_with_jwt_param(self):
+    def test_jwt_token_with_jwtToken_param(self):
         """Test extracting JWT token with jwtToken parameter."""
         iframe_src = "https://cf-embed.play.hotmart.com/embed/12345?jwtToken=test_token&other=value"
         jwt_token = extract_jwt_token(iframe_src)
