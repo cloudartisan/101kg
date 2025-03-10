@@ -29,9 +29,9 @@ def load_config(config_path=None):
         try:
             with open(config_path, 'r') as f:
                 config = json.load(f)
-            print(f"Loaded configuration from {config_path}")
+            logger.info(f"Loaded configuration from {config_path}")
         except Exception as e:
-            print(f"Error loading config: {str(e)}")
+            logger.error(f"Error loading config: {str(e)}")
     
     # Prompt for missing credentials if interactive
     if sys.stdin.isatty():
@@ -46,9 +46,9 @@ def load_config(config_path=None):
             with open(config_path, 'w') as f:
                 json.dump(config, f)
             os.chmod(config_path, 0o600)  # Make the file readable only by the owner
-            print(f"Configuration saved to {config_path}")
+            logger.info(f"Configuration saved to {config_path}")
         except Exception as e:
-            print(f"Error saving config: {str(e)}")
+            logger.error(f"Error saving config: {str(e)}")
     
     return config
 
@@ -157,9 +157,10 @@ def main():
             logger.error("No lessons found. Please check your account and try again.")
             return 1
         
-        logger.info(f"Found {len(lessons)} lessons:")
+        logger.info(f"Found {len(lessons)} lessons")
+        # Only log all lesson titles at debug level
         for i, lesson in enumerate(lessons, 1):
-            logger.info(f"{i}. {lesson['title']} (hash: {lesson['hash']})")
+            logger.debug(f"{i}. {lesson['title']} (hash: {lesson['hash']})")
         
         # Just list mode
         if args.list:

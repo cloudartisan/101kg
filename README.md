@@ -100,6 +100,9 @@ python 101kg.py --headless
 - `url_extractor.py` - Specialized URL extraction logic
 - `url_utils.py` - Shared URL utility functions
 - `video_downloader.py` - Core downloader class handling authentication and video extraction
+- `scripts/` - Utility scripts
+  - `check_firefox.py` - Helper tool to verify Firefox configuration with Video Downloader Helper extension
+  - `browser_audio_diagnostic.py` - Tool to diagnose browser audio capture capabilities
 
 ## Development
 
@@ -139,37 +142,28 @@ pytest -v
 pytest --cov=. --cov-report=html
 ```
 
-### Current Test Coverage Summary
+### Test Coverage
 
-```
-Name                       Stmts   Miss  Cover
-----------------------------------------------
-101kg.py                     95     35    63%
-browser_manager.py          186     21    89%
-check_firefox.py             14      2    86%
-logger.py                    42      0   100%
-url_extractor.py            212      9    96%
-url_utils.py                 76      2    97%
-video_downloader.py        1034    380    63%
-tests/__init__.py             0      0   100%
-tests/conftest.py            60      0   100%
-tests/test_101kg.py          59      0   100%
-tests/test_audio.py          40      0   100%
-tests/test_browser_manager.py  140      0   100%
-tests/test_logger.py        107      1    99%
-tests/test_url_extractor.py  280      0   100%
-tests/test_url_utils.py       91      0   100%
-tests/test_video_downloader.py  498      0   100%
-----------------------------------------------
-TOTAL                      2934    450    85%
+To generate the current test coverage report:
+
+```bash
+# Generate coverage summary
+pytest --cov=.
+
+# Generate detailed coverage with missing lines
+pytest --cov=. --cov-report=term-missing
+
+# Generate HTML coverage report
+pytest --cov=. --cov-report=html
 ```
 
-Key modules and their coverage:
-- **url_extractor.py**: 96% coverage (212 statements, 9 missed)
-- **url_utils.py**: 97% coverage (76 statements, 2 missed)
-- **browser_manager.py**: 89% coverage (186 statements, 21 missed)
-- **logger.py**: 100% coverage (42 statements, 0 missed)
-- **video_downloader.py**: 63% coverage (1034 statements, 380 missed)
+Key modules to focus on for coverage improvements:
+- **url_extractor.py**: Handles specialized URL extraction
+- **url_utils.py**: Provides shared URL utility functions
+- **browser_manager.py**: Manages browser initialization and interaction
+- **logger.py**: Configures logging utilities
+- **101kg.py**: Main entry point script
+- **video_downloader.py**: Core downloader class with complex functionality
 
 ## Notes
 - The script logs in, navigates to the lesson page, extracts the video URL, and downloads it.
@@ -205,7 +199,22 @@ If you encounter download issues with a specific video:
    python 101kg.py --url "https://vod-akm.play.hotmart.com/video/..." --output "test_video" --log-level debug
    ```
 
-4. The script will attempt multiple download methods in sequence:
+4. For Firefox-related issues, use the Firefox configuration checker:
+   ```sh
+   python scripts/check_firefox.py
+   ```
+   Or specify a Firefox profile path:
+   ```sh
+   python scripts/check_firefox.py --profile "/path/to/firefox/profile"
+   ```
+
+5. For audio capture problems (when direct browser recording is used):
+   ```sh
+   python scripts/browser_audio_diagnostic.py
+   ```
+   This will test if your browser can capture audio from video elements.
+
+6. The script will attempt multiple download methods in sequence:
    - Helper approach (mimics browser download helper extensions)
    - Direct page navigation and video extraction
    - Browser-based download with authenticated session

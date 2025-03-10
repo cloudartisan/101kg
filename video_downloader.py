@@ -228,12 +228,21 @@ class VideoDownloader:
             
             # Check if we can find elements that should be present after login
             try:
-                # Look for elements that would typically be present after successful login
+                # Look for a wider range of elements that would typically be present after successful login
                 WebDriverWait(self.driver, 5).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, ".menu-items, .user-menu, .dashboard"))
+                    EC.presence_of_any_element_located([
+                        (By.CSS_SELECTOR, ".menu-items, .user-menu, .dashboard, .profile, .avatar, .user-profile"),
+                        (By.CSS_SELECTOR, ".logout-button, .sidebar, .course-list, .header-user"),
+                        (By.CSS_SELECTOR, "a[href*='logout'], button[data-test='logout'], .user-menu"),
+                        (By.XPATH, "//*[contains(text(), 'Logout') or contains(text(), 'Sign out') or contains(text(), 'Sair')]")
+                    ])
                 )
-            except Exception:
-                log.error("Login likely failed: Could not find post-login elements")
+            except Exception as e:
+                # Don't fail immediately - check if we're NOT on the login page anymore
+                if "login" not in self.driver.current_url.lower():
+                    log.info("Login appears successful (redirected from login page)")
+                    return True
+                log.error(f"Login likely failed: Could not find post-login elements: {e}")
                 return False
                 
             # Transfer cookies from Selenium to requests session
@@ -696,7 +705,6 @@ class VideoDownloader:
             # IMPROVED APPROACH: Everything is done in a single browser tab
             # to preserve the authentication context
             if self._try_optimized_browser_recording(video_url, filename):
-                log.info(f"Successfully downloaded {filename} using optimized browser recording")
                 return True
                 
             # If the optimized method fails, try our previous methods in sequence
