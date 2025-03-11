@@ -8,6 +8,7 @@ This repository contains Python modules to automate the login, extraction, and d
 - Automates login to Hotmart
 - Extracts video URL from lesson pages using advanced techniques
 - Supports MP4 and HLS (.m3u8) downloads
+- Handles multi-part videos (automatically downloads all parts)
 - Uses Selenium for browser automation
 - Handles cookie policy popups and other overlays
 - Comprehensive test suite for reliability
@@ -63,10 +64,10 @@ This repository contains Python modules to automate the login, extraction, and d
 
 #### Download Selection Options:
 - `--list`: List available videos without downloading anything
-- `--single NAME_OR_NUMBER`: Download a specific video by name or index number
+- `--single NAME_OR_NUMBER`: Download a specific video by name or index number (including all parts if multi-part)
 - `--url DIRECT_URL`: Download from a direct video URL
-- `--output FILENAME`: Specify output filename for downloads
-- `--indexes "1,3,5"`: Download specific videos by index numbers (comma-separated list)
+- `--output FILENAME`: Specify output filename for downloads (part suffix will be added for multi-part videos)
+- `--indexes "1,3,5"`: Download specific videos by index numbers (comma-separated list, all parts will be downloaded for each index)
 
 ### Example Commands
 
@@ -79,6 +80,9 @@ python 101kg.py --single "Clock Game"
 
 # Download a specific video by index number
 python 101kg.py --single 1
+
+# Download a specific multi-part video (automatically downloads all parts)
+python 101kg.py --single "Fundamental Movement"
 
 # Download from a direct URL
 python 101kg.py --url "https://vod-akm.play.hotmart.com/video/..." --output "clock_game"
@@ -167,6 +171,8 @@ Key modules to focus on for coverage improvements:
 
 ## Notes
 - The script logs in, navigates to the lesson page, extracts the video URL, and downloads it.
+- For multi-part videos (with "Part 1", "Part 2", etc.), all parts are automatically detected and downloaded.
+- Each part of a multi-part video is saved with an appropriate suffix in the filename.
 - If the video is in `.m3u8` format, `ffmpeg` is required to convert it to MP4.
 - This script is for personal use only and should not be used to distribute copyrighted material.
 

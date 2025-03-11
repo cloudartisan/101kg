@@ -312,6 +312,9 @@ class VideoDownloader:
         """
         Extract video URL(s) from lesson page.
         
+        This method handles multi-part videos by navigating to each part
+        and extracting URLs for all parts of a lesson.
+        
         In the latest approach, this method now has dual purposes:
         1. It navigates to the lesson page, which is critical for the direct recording method
         2. It attempts to extract URLs as a fallback, but our primary approach will be direct recording
@@ -349,27 +352,114 @@ class VideoDownloader:
                 log.debug(f"Could not extract lesson title: {str(e)}")
                 self.current_lesson_title = None
 
-            # Check if there are multiple video parts
+            # Get all video parts
+            all_video_parts = []
             try:
                 parts = self.browser_manager.wait_for_elements(
                     By.CSS_SELECTOR,
                     "li.playlist-media, .video-part, .chapter-item",
-                    timeout=3
+                    timeout=3,
+                    condition="visible"
                 )
+                
                 if parts and len(parts) > 0:
-                    log.debug(f"Found {len(parts)} video parts")
+                    log.info(f"Found {len(parts)} video parts")
+                    # Print text content of each part for debugging
+                    for i, part in enumerate(parts):
+                        try:
+                            part_text = part.text.strip()
+                            log.info(f"Part {i+1} text: '{part_text}'")
+                        except:
+                            log.info(f"Part {i+1} text: <could not extract>")
+                    
                     self.current_lesson_parts = len(parts)
+                    all_video_parts = parts
                 else:
+                    log.info("No video parts found, treating as single video")
                     self.current_lesson_parts = 1
             except Exception as e:
                 log.debug(f"Could not determine video parts: {str(e)}")
                 self.current_lesson_parts = 1
+                
+            # Process all video parts and collect URLs for each
+            all_part_urls = []
+            
+            # If multiple parts were found, process each one
+            if len(all_video_parts) > 1:
+                for part_idx, part_element in enumerate(all_video_parts, 1):
+                    try:
+                        # Extract part name/label if available
+                        part_label = part_element.text.strip()
+                        part_suffix = f"Part_{part_idx}"
+                        
+                        if part_label:
+                            # Clean up the part label - replace newlines and multiple spaces with a single space
+                            clean_label = ' '.join(part_label.split())
+                            # Use actual part label if available
+                            part_suffix = f"{clean_label.replace(' ', '_')}"
+                            log.debug(f"Processing part {part_idx}/{len(all_video_parts)}: {part_suffix}")
+                        else:
+                            log.debug(f"Processing part {part_idx}/{len(all_video_parts)}")
+                        
+                        # Click on the part to load its content
+                        log.debug(f"Clicking on part element to navigate to part {part_idx}")
+                        try:
+                            # Use JavaScript click for better reliability
+                            self.driver.execute_script("arguments[0].click();", part_element)
+                            time.sleep(4)  # Wait for the part to load
+                        except Exception as e:
+                            log.warning(f"Error clicking on part {part_idx}: {str(e)}")
+                            continue
+                        
+                        # Extract the video URL for this part
+                        video_url = self._extract_single_video_url()
+                        
+                        if video_url:
+                            all_part_urls.append((part_suffix, video_url))
+                        else:
+                            # Use placeholder for direct recording
+                            log.debug(f"No URL extracted for part {part_idx}, using placeholder")
+                            all_part_urls.append((part_suffix, f"direct-recording://{lesson_url}?part={part_idx}"))
+                            
+                    except Exception as e:
+                        log.warning(f"Error processing part {part_idx}: {str(e)}")
+                        # Add placeholder for this part anyway
+                        all_part_urls.append((f"Part_{part_idx}", f"direct-recording://{lesson_url}?part={part_idx}"))
+                
+                # If we successfully extracted multiple parts, return them
+                if all_part_urls:
+                    log.info(f"Successfully extracted URLs for {len(all_part_urls)} parts")
+                    return all_part_urls
+            
+            # If no parts found or failed to process parts, fall back to standard extraction
+            # for the currently loaded page
+            log.debug("Falling back to standard URL extraction for current page")
+            video_url = self._extract_single_video_url()
+            
+            if video_url:
+                return [("", video_url)]
+            else:
+                # Create a placeholder URL that will trigger our recording approach
+                log.debug("No URLs extracted, using placeholder for direct recording method")
+                return [("", f"direct-recording://{lesson_url}")]
 
-            # TRADITIONAL URL EXTRACTION (as fallback)
-            # Continue with the original URL extraction approach as a fallback
-            video_urls = []
+        except Exception as e:
+            error_msg = str(e).split('\n')[0] if str(e) else "Unknown error"
+            log.error(f"Failed to load lesson page: {error_msg}", exc_info=True)
+            # Even on error, return a placeholder to try direct recording
+            return [("", f"direct-recording://{lesson_url}")]
+            
+    def _extract_single_video_url(self):
+        """
+        Extract video URL from the currently loaded page.
+        This method implements the different approaches to extract the video URL.
+        
+        Returns:
+            str: Video URL if found, None otherwise
+        """
+        try:
             wait = WebDriverWait(self.driver, 15)
-
+            
             # Find the iframe
             log.info("Looking for video iframe in page")
             try:
@@ -396,42 +486,33 @@ class VideoDownloader:
                     # Try different methods to get the video URL
                     video_urls = self._try_jwt_token_approach(video_id, jwt_token)
                     if video_urls:
-                        return video_urls
+                        return video_urls[0][1]  # Return the URL from the first tuple
 
                     video_urls = self._try_api_approach(video_id, jwt_token)
                     if video_urls:
-                        return video_urls
+                        return video_urls[0][1]
 
-                    video_urls = self._try_javascript_extraction(lesson_url, video_id, jwt_token)
+                    video_urls = self._try_javascript_extraction(self.current_lesson_url, video_id, jwt_token)
                     if video_urls:
-                        return video_urls
+                        return video_urls[0][1]
 
-                    video_urls = self._try_direct_embed_approach(video_id, jwt_token, lesson_url)
+                    video_urls = self._try_direct_embed_approach(video_id, jwt_token, self.current_lesson_url)
                     if video_urls:
-                        return video_urls
+                        return video_urls[0][1]
 
                     video_urls = self._try_network_requests_approach(video_id, jwt_token)
                     if video_urls:
-                        return video_urls
+                        return video_urls[0][1]
                 else:
                     log.warning("Could not extract video ID from iframe src")
             except Exception as e:
                 log.warning(f"Could not find or process iframe: {str(e)}")
-
-            # Even if we couldn't extract a URL, we can still proceed with the direct recording method
-            # Return a dummy URL that the direct recording method can use
-            if not video_urls:
-                # Create a placeholder URL that will trigger our recording approach
-                log.debug("No URLs extracted, using placeholder for direct recording method")
-                return [("", f"direct-recording://{lesson_url}")]
-
-            return video_urls
-
+                
+            return None
+            
         except Exception as e:
-            error_msg = str(e).split('\n')[0] if str(e) else "Unknown error"
-            log.error(f"Failed to load lesson page: {error_msg}", exc_info=True)
-            # Even on error, return a placeholder to try direct recording
-            return [("", f"direct-recording://{lesson_url}")]
+            log.error(f"Error extracting video URL: {str(e)}", exc_info=True)
+            return None
 
     def _extract_jwt_token(self, iframe_src):
         """Extract JWT token from iframe src if present."""

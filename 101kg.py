@@ -79,13 +79,13 @@ def main():
     parser.add_argument('--list', action='store_true', 
                         help='List available videos without downloading')
     parser.add_argument('--single', type=str, 
-                        help='Download a single video by name or number')
+                        help='Download a single video by name or number (including all parts if multi-part)')
     parser.add_argument('--url', type=str, 
                         help='Direct download URL for a video')
     parser.add_argument('--output', type=str, 
-                        help='Output filename for single download')
+                        help='Output filename for single download (part suffix will be added for multi-part videos)')
     parser.add_argument('--indexes', type=str, 
-                        help='Comma-separated list of video indexes to download')
+                        help='Comma-separated list of video indexes to download (all parts will be downloaded for each index)')
     
     args = parser.parse_args()
 
