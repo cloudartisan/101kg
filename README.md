@@ -9,6 +9,7 @@ This repository contains Python modules to automate the login, extraction, and d
 - Extracts video URL from lesson pages using advanced techniques
 - Supports MP4 and HLS (.m3u8) downloads
 - Handles multi-part videos (automatically downloads all parts)
+- Extracts and saves text descriptions of games (instructions, materials needed, setup)
 - Uses Selenium for browser automation
 - Handles cookie policy popups and other overlays
 - Comprehensive test suite for reliability
@@ -83,6 +84,10 @@ python 101kg.py --single 1
 
 # Download a specific multi-part video (automatically downloads all parts)
 python 101kg.py --single "Fundamental Movement"
+
+# Download video and its text description with game instructions and setup
+python 101kg.py --single "Puppy Race"
+# Description is saved to videos/022_21 - Puppy Race.txt
 
 # Download from a direct URL
 python 101kg.py --url "https://vod-akm.play.hotmart.com/video/..." --output "clock_game"
@@ -173,6 +178,7 @@ Key modules to focus on for coverage improvements:
 - The script logs in, navigates to the lesson page, extracts the video URL, and downloads it.
 - For multi-part videos (with "Part 1", "Part 2", etc.), all parts are automatically detected and downloaded.
 - Each part of a multi-part video is saved with an appropriate suffix in the filename.
+- Game descriptions including instructions, materials needed, and setup steps are saved as text files with the same base filename as the video.
 - If the video is in `.m3u8` format, `ffmpeg` is required to convert it to MP4.
 - This script is for personal use only and should not be used to distribute copyrighted material.
 

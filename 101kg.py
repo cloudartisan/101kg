@@ -181,6 +181,11 @@ def main():
                         logger.error(f"No videos found for {lesson['title']}")
                         continue
                     
+                    # Extract lesson description text first
+                    lesson_url = f"{downloader.base_url}/lesson/{lesson['hash']}"
+                    description_text = downloader.extract_lesson_description(lesson_url)
+                        
+                    # Save video files
                     for part_idx, (part_suffix, video_url) in enumerate(video_urls, 1):
                         filename = args.output or f"{i:03d}_{lesson['title']}"
                         if part_suffix:
@@ -188,6 +193,17 @@ def main():
                         
                         if downloader.download_video(video_url, filename):
                             logger.info(f"Successfully downloaded: {filename}")
+                            
+                            # Save description text (only for the first part to avoid duplication)
+                            if part_idx == 1 and description_text:
+                                base_filename = filename.rsplit('_', 1)[0] if part_suffix else filename
+                                description_path = os.path.join('videos', f"{base_filename}.txt")
+                                try:
+                                    with open(description_path, "w", encoding="utf-8") as desc_file:
+                                        desc_file.write(description_text)
+                                    logger.info(f"Saved lesson description to: {description_path}")
+                                except Exception as e:
+                                    logger.error(f"Failed to save description text: {str(e)}")
                         else:
                             logger.error(f"Failed to download: {filename}")
                     break
@@ -215,6 +231,10 @@ def main():
                             fail_count += 1
                             continue
                         
+                        # Extract lesson description text first
+                        lesson_url = f"{downloader.base_url}/lesson/{lesson['hash']}"
+                        description_text = downloader.extract_lesson_description(lesson_url)
+                        
                         for part_idx, (part_suffix, video_url) in enumerate(video_urls, 1):
                             filename = f"{idx:03d}_{lesson['title']}"
                             if part_suffix:
@@ -223,6 +243,17 @@ def main():
                             if downloader.download_video(video_url, filename):
                                 logger.info(f"Successfully downloaded: {filename}")
                                 success_count += 1
+                                
+                                # Save description text (only for the first part to avoid duplication)
+                                if part_idx == 1 and description_text:
+                                    base_filename = filename.rsplit('_', 1)[0] if part_suffix else filename
+                                    description_path = os.path.join('videos', f"{base_filename}.txt")
+                                    try:
+                                        with open(description_path, "w", encoding="utf-8") as desc_file:
+                                            desc_file.write(description_text)
+                                        logger.info(f"Saved lesson description to: {description_path}")
+                                    except Exception as e:
+                                        logger.error(f"Failed to save description text: {str(e)}")
                             else:
                                 logger.error(f"Failed to download: {filename}")
                                 fail_count += 1

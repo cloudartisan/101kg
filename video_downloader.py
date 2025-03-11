@@ -514,6 +514,155 @@ class VideoDownloader:
             log.error(f"Error extracting video URL: {str(e)}", exc_info=True)
             return None
 
+    def extract_lesson_description(self, lesson_url=None):
+        """
+        Extract the text description of a video lesson.
+        This includes game descriptions, materials needed, setup instructions, etc.
+        
+        Args:
+            lesson_url (str, optional): URL of the lesson page. If None, uses current_lesson_url
+            
+        Returns:
+            str: The extracted description text, or None if not found
+        """
+        try:
+            # Use provided URL or current lesson URL if already on a lesson page
+            url_to_use = lesson_url or self.current_lesson_url
+            if not url_to_use:
+                log.error("No lesson URL provided and no current lesson URL set")
+                return None
+                
+            # Navigate to the lesson page if not already there
+            current_url = self.driver.current_url
+            if url_to_use != current_url:
+                log.info(f"Navigating to lesson page: {url_to_use}")
+                self.driver.get(url_to_use)
+                time.sleep(5)  # Wait for page to load
+                
+            # Try multiple selectors that might contain the description content
+            description_selectors = [
+                ".description-text", 
+                ".lesson-description", 
+                ".content-description",
+                ".lesson-content", 
+                ".media-description",
+                "div.description",
+                ".lesson-text",
+                "#description",
+                ".course-content",
+                "div[class*='description']",
+                "div[class*='content']"
+            ]
+            
+            # First try using JavaScript to extract main content
+            try:
+                log.debug("Trying JavaScript to extract main content")
+                js_script = """
+                    // Look for main content area
+                    var contentElements = [];
+                    
+                    // Try finding elements by their text content
+                    var allElements = document.querySelectorAll('div, section, article');
+                    for (var i = 0; i < allElements.length; i++) {
+                        var el = allElements[i];
+                        var text = el.textContent.toLowerCase();
+                        
+                        // Look for elements containing common game description terms
+                        if ((text.includes('material') || 
+                             text.includes('description') || 
+                             text.includes('setup') || 
+                             text.includes('instruction') || 
+                             text.includes('objective') ||
+                             text.includes('game')) && 
+                            text.length > 200) {
+                            contentElements.push({
+                                element: el,
+                                text: el.textContent.trim(),
+                                score: text.length
+                            });
+                        }
+                    }
+                    
+                    // Sort by content length (longer is likely more complete)
+                    contentElements.sort(function(a, b) {
+                        return b.score - a.score;
+                    });
+                    
+                    return contentElements.length > 0 ? contentElements[0].text : null;
+                """
+                js_result = self.driver.execute_script(js_script)
+                if js_result and len(js_result) > 100:
+                    log.info("Found description text using JavaScript")
+                    log.debug(f"Description text (first 100 chars): {js_result[:100]}...")
+                    return js_result
+            except Exception as e:
+                log.debug(f"JavaScript extraction failed: {str(e)}")
+            
+            # Try each selector
+            for selector in description_selectors:
+                try:
+                    description_element = self.browser_manager.wait_for_element(
+                        By.CSS_SELECTOR,
+                        selector,
+                        timeout=2
+                    )
+                    
+                    if description_element:
+                        description_text = description_element.text.strip()
+                        if description_text:
+                            log.info(f"Found description text using selector: {selector}")
+                            log.debug(f"Description text (first 100 chars): {description_text[:100]}...")
+                            return description_text
+                except Exception as e:
+                    log.debug(f"Selector {selector} did not match: {str(e)}")
+                    
+            # If no selectors matched, try a broader search
+            log.debug("Trying to find description by looking for larger content blocks")
+            content_blocks = self.browser_manager.wait_for_elements(
+                By.CSS_SELECTOR,
+                "div.container > div, main > div, article, section, .tab-content, .lesson-body, div.content",
+                timeout=3
+            )
+            
+            # Look for content blocks that might contain our description
+            # Often descriptions are in large text blocks below the video
+            potential_descriptions = []
+            
+            for block in content_blocks:
+                try:
+                    block_text = block.text.strip()
+                    # Check if this block has substantial text content (likely description)
+                    if len(block_text) > 100:
+                        # Score the text based on whether it has game-related keywords
+                        score = 0
+                        lower_text = block_text.lower()
+                        keywords = ['material', 'setup', 'instruction', 'objective', 'game', 'description']
+                        for keyword in keywords:
+                            if keyword in lower_text:
+                                score += 10
+                        
+                        # Add to potential descriptions with score
+                        potential_descriptions.append((block_text, score, len(block_text)))
+                except Exception as e:
+                    continue
+            
+            # Sort potential descriptions by score, then by length
+            potential_descriptions.sort(key=lambda x: (-x[1], -x[2]))
+            
+            # Return best match if we found any
+            if potential_descriptions:
+                best_match = potential_descriptions[0][0]
+                log.info("Found potential description in content block")
+                log.debug(f"Content block text (first 100 chars): {best_match[:100]}...")
+                return best_match
+                    
+            log.warning("Could not find lesson description on page")
+            return None
+            
+        except Exception as e:
+            log.error(f"Error extracting lesson description: {str(e)}", exc_info=True)
+            return None
+            
     def _extract_jwt_token(self, iframe_src):
         """Extract JWT token from iframe src if present."""
         jwt_token = extract_jwt_token(iframe_src)
@@ -5572,6 +5721,9 @@ class VideoDownloader:
                     log.warning(f"No videos found for lesson: {lesson_title}")
                     continue
 
+                # Extract lesson description text first
+                description_text = self.extract_lesson_description(lesson_url)
+
                 log.info(f"Found {len(video_urls)} video parts for lesson: {lesson_title}")
 
                 for part_idx, (part_suffix, video_url) in enumerate(video_urls, 1):
@@ -5585,6 +5737,17 @@ class VideoDownloader:
 
                     if self.download_video(video_url, filename):
                         log.info(f"Successfully downloaded: {filename}")
+                        
+                        # Save description text (only for the first part to avoid duplication)
+                        if part_idx == 1 and description_text:
+                            base_filename = filename.rsplit('_', 1)[0] if part_suffix else filename
+                            description_path = os.path.join(self.download_dir, f"{base_filename}.txt")
+                            try:
+                                with open(description_path, "w", encoding="utf-8") as desc_file:
+                                    desc_file.write(description_text)
+                                log.info(f"Saved lesson description to: {description_path}")
+                            except Exception as e:
+                                log.error(f"Failed to save description text: {str(e)}")
                     else:
                         log.error(f"Failed to download: {filename}")
 
